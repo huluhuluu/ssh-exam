@@ -1,20 +1,20 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
+#[cfg(unix)]
 use nix::unistd::User;
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
     keys::{validate_fingerprint, PublicKey},
-    quiz::validate_bank_id,
+    quiz::{validate_bank_id, Quiz, LEGACY_BANK_ID},
 };
-
-#[cfg(test)]
-use crate::quiz::LEGACY_BANK_ID;
 
 const MIGRATION_1: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_mapping_bank.sql");
 const MIGRATION_3: &str = include_str!("../migrations/0003_unified_access.sql");
+const MIGRATION_4: &str = include_str!("../migrations/0004_tests_and_publications.sql");
 
 #[derive(Debug, Error)]
 pub enum GateError {
@@ -59,7 +59,6 @@ pub struct BindingRecord {
     pub person_id: i64,
     pub ssh_key_id: Option<i64>,
     pub unix_username: String,
-    pub bank_id: String,
     pub enabled: bool,
 }
 
@@ -79,7 +78,8 @@ pub struct PolicyRecord {
     pub key_type: String,
     pub key_base64: String,
     pub passed: bool,
-    pub bank_id: String,
+    pub test_id: String,
+    pub revision: String,
 }
 
 #[derive(Clone, Debug)]
@@ -88,7 +88,8 @@ pub struct PendingIdentity {
     pub display_name: String,
     pub passed: bool,
     pub attempt_count: u32,
-    pub bank_id: String,
+    pub test_id: String,
+    pub revision: String,
 }
 
 #[derive(Clone, Debug)]
@@ -96,17 +97,47 @@ pub struct BindingInput {
     pub person_id: i64,
     pub ssh_key_id: Option<i64>,
     pub unix_username: String,
-    pub bank_id: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct AttemptInput<'a> {
     pub person_id: i64,
+    pub test_id: &'a str,
+    pub revision: &'a str,
     pub score: u32,
     pub total: u32,
     pub passed: bool,
     pub answers_json: &'a str,
     pub max_attempts: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TestDefinitionRecord {
+    pub id: String,
+    pub title: String,
+    pub bank_ids: Vec<String>,
+    pub pass_threshold_percent: u32,
+    pub max_attempts: u32,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TestDefinitionInput {
+    pub id: String,
+    pub title: String,
+    pub bank_ids: Vec<String>,
+    pub pass_threshold_percent: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct PublishedTest {
+    pub publication_id: i64,
+    pub test_id: String,
+    pub revision: String,
+    pub quiz: Quiz,
+    pub published_at: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -131,7 +162,12 @@ impl Db {
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);",
         )?;
-        for (version, migration) in [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)] {
+        for (version, migration) in [
+            (1, MIGRATION_1),
+            (2, MIGRATION_2),
+            (3, MIGRATION_3),
+            (4, MIGRATION_4),
+        ] {
             let applied = transaction
                 .query_row(
                     "SELECT 1 FROM schema_migrations WHERE version = ?1",
@@ -231,7 +267,6 @@ impl Db {
 
     pub fn add_binding(&self, input: &BindingInput) -> GateResult<i64> {
         validate_unix_username(&input.unix_username)?;
-        validate_bank_id(&input.bank_id).map_err(|error| GateError::Invalid(error.to_string()))?;
 
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -279,15 +314,9 @@ impl Db {
         }
 
         let inserted = transaction.execute(
-            "INSERT INTO login_bindings(
-                person_id, ssh_key_id, unix_username, bank_id, created_at
-             ) VALUES (?1, ?2, ?3, ?4, unixepoch())",
-            params![
-                input.person_id,
-                input.ssh_key_id,
-                input.unix_username,
-                input.bank_id
-            ],
+            "INSERT INTO login_bindings(person_id, ssh_key_id, unix_username, created_at)
+             VALUES (?1, ?2, ?3, unixepoch())",
+            params![input.person_id, input.ssh_key_id, input.unix_username],
         );
         if let Err(error) = inserted {
             if is_constraint(&error) {
@@ -315,7 +344,7 @@ impl Db {
         }
         let binding = transaction
             .query_row(
-                "SELECT person_id, ssh_key_id, unix_username, bank_id
+                "SELECT person_id, ssh_key_id, unix_username
                  FROM login_bindings WHERE id = ?1",
                 [binding_id],
                 |row| {
@@ -323,14 +352,12 @@ impl Db {
                         row.get::<_, i64>(0)?,
                         row.get::<_, Option<i64>>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
                     ))
                 },
             )
             .optional()?
             .ok_or(GateError::NotFound)?;
         validate_unix_username(&binding.2)?;
-        validate_bank_id(&binding.3).map_err(|error| GateError::Invalid(error.to_string()))?;
         if let Some(key_id) = binding.1 {
             let owner = transaction
                 .query_row(
@@ -373,14 +400,31 @@ impl Db {
     pub fn reset_exam(&self, person_id: i64) -> GateResult<()> {
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        expect_changed(transaction.execute(
+        let exists = transaction
+            .query_row("SELECT 1 FROM persons WHERE id = ?1", [person_id], |_| {
+                Ok(())
+            })
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(GateError::NotFound);
+        }
+        transaction.execute(
             "UPDATE persons SET passed_at = NULL WHERE id = ?1",
             [person_id],
-        )?)?;
-        transaction.execute(
-            "DELETE FROM exam_attempts WHERE person_id = ?1",
-            [person_id],
         )?;
+        if let Some((test_id, revision)) = active_test_identity(&transaction)? {
+            transaction.execute(
+                "DELETE FROM exam_passes
+                 WHERE person_id = ?1 AND test_id = ?2 AND revision = ?3",
+                params![person_id, test_id, revision],
+            )?;
+            transaction.execute(
+                "DELETE FROM exam_attempts
+                 WHERE person_id = ?1 AND test_id = ?2 AND revision = ?3",
+                params![person_id, test_id, revision],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -396,10 +440,17 @@ impl Db {
         let raw = connection
             .query_row(
                 "SELECT p.id, b.unix_username, k.fingerprint, k.key_type, k.key_base64,
-                        p.passed_at IS NOT NULL, b.bank_id
+                        EXISTS(
+                            SELECT 1 FROM exam_passes pass
+                            WHERE pass.person_id = p.id
+                              AND pass.test_id = publication.test_id
+                              AND pass.revision = publication.revision
+                        ), publication.test_id, publication.revision
                  FROM login_bindings b
                  JOIN persons p ON p.id = b.person_id
                  JOIN ssh_keys k ON k.person_id = p.id
+                 JOIN active_test_publication active ON active.singleton = 1
+                 JOIN test_publications publication ON publication.id = active.publication_id
                  WHERE b.enabled = 1 AND p.enabled = 1 AND k.enabled = 1
                    AND b.unix_username = ?1 AND k.fingerprint = ?2
                    AND (b.ssh_key_id IS NULL OR b.ssh_key_id = k.id)
@@ -415,14 +466,24 @@ impl Db {
                         row.get::<_, String>(4)?,
                         row.get::<_, bool>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
             .optional()?;
         raw.map(
-            |(person_id, username, fingerprint, key_type, key_base64, passed, bank_id)| {
-                validate_bank_id(&bank_id)
-                    .map_err(|error| GateError::Invalid(error.to_string()))?;
+            |(
+                person_id,
+                username,
+                fingerprint,
+                key_type,
+                key_base64,
+                passed,
+                test_id,
+                revision,
+            )| {
+                validate_test_id(&test_id)?;
+                validate_revision(&revision)?;
                 Ok(PolicyRecord {
                     person_id,
                     unix_username: username,
@@ -430,7 +491,8 @@ impl Db {
                     key_type,
                     key_base64,
                     passed,
-                    bank_id,
+                    test_id,
+                    revision,
                 })
             },
         )
@@ -449,16 +511,18 @@ impl Db {
         let connection = self.open_read_only()?;
         let identity = connection.query_row(
             "SELECT p.display_name,
-                    (SELECT count(*) FROM exam_attempts a WHERE a.person_id = p.id)
+                    (SELECT count(*) FROM exam_attempts a
+                     WHERE a.person_id = p.id AND a.test_id = ?2 AND a.revision = ?3)
              FROM persons p WHERE p.id = ?1",
-            [policy.person_id],
+            params![policy.person_id, policy.test_id, policy.revision],
             |row| {
                 Ok(PendingIdentity {
                     person_id: policy.person_id,
                     display_name: row.get(0)?,
                     passed: policy.passed,
                     attempt_count: row.get(1)?,
-                    bank_id: policy.bank_id.clone(),
+                    test_id: policy.test_id.clone(),
+                    revision: policy.revision.clone(),
                 })
             },
         )?;
@@ -469,12 +533,17 @@ impl Db {
         if input.total == 0 || input.score > input.total || input.max_attempts == 0 {
             return Err(GateError::Invalid("invalid exam score".to_owned()));
         }
+        validate_test_id(input.test_id)?;
+        validate_revision(input.revision)?;
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let state = transaction
             .query_row(
-                "SELECT enabled, passed_at IS NOT NULL FROM persons WHERE id = ?1",
-                [input.person_id],
+                "SELECT p.enabled, EXISTS(
+                    SELECT 1 FROM exam_passes pass
+                    WHERE pass.person_id = p.id AND pass.test_id = ?2 AND pass.revision = ?3
+                 ) FROM persons p WHERE p.id = ?1",
+                params![input.person_id, input.test_id, input.revision],
                 |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
             )
             .optional()?
@@ -486,8 +555,9 @@ impl Db {
             return Err(GateError::AlreadyPassed);
         }
         let count: u32 = transaction.query_row(
-            "SELECT count(*) FROM exam_attempts WHERE person_id = ?1",
-            [input.person_id],
+            "SELECT count(*) FROM exam_attempts
+             WHERE person_id = ?1 AND test_id = ?2 AND revision = ?3",
+            params![input.person_id, input.test_id, input.revision],
             |row| row.get(0),
         )?;
         if count >= input.max_attempts {
@@ -495,20 +565,23 @@ impl Db {
         }
         transaction.execute(
             "INSERT INTO exam_attempts(
-                person_id, completed_at, score, total, passed, answers_json
-             ) VALUES (?1, unixepoch(), ?2, ?3, ?4, ?5)",
+                person_id, completed_at, score, total, passed, answers_json, test_id, revision
+             ) VALUES (?1, unixepoch(), ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 input.person_id,
                 input.score,
                 input.total,
                 input.passed,
-                input.answers_json
+                input.answers_json,
+                input.test_id,
+                input.revision,
             ],
         )?;
         if input.passed {
             transaction.execute(
-                "UPDATE persons SET passed_at = unixepoch() WHERE id = ?1",
-                [input.person_id],
+                "INSERT INTO exam_passes(person_id, test_id, revision, passed_at)
+                 VALUES (?1, ?2, ?3, unixepoch())",
+                params![input.person_id, input.test_id, input.revision],
             )?;
         }
         transaction.commit()?;
@@ -518,7 +591,16 @@ impl Db {
     pub fn list_people(&self) -> GateResult<Vec<PersonView>> {
         let connection = self.open_read_only()?;
         let mut statement = connection.prepare(
-            "SELECT id, display_name, enabled, passed_at FROM persons ORDER BY display_name, id",
+            "SELECT p.id, p.display_name, p.enabled,
+                    (SELECT pass.passed_at
+                     FROM active_test_publication active
+                     JOIN test_publications publication ON publication.id = active.publication_id
+                     JOIN exam_passes pass
+                       ON pass.person_id = p.id
+                      AND pass.test_id = publication.test_id
+                      AND pass.revision = publication.revision
+                     WHERE active.singleton = 1)
+             FROM persons p ORDER BY p.display_name, p.id",
         )?;
         let persons = statement
             .query_map([], |row| {
@@ -535,7 +617,12 @@ impl Db {
             let keys = load_keys(&connection, person.id)?;
             let bindings = load_bindings(&connection, person.id)?;
             let attempt_count = connection.query_row(
-                "SELECT count(*) FROM exam_attempts WHERE person_id = ?1",
+                "SELECT count(*) FROM exam_attempts attempt
+                 JOIN active_test_publication active ON active.singleton = 1
+                 JOIN test_publications publication ON publication.id = active.publication_id
+                 WHERE attempt.person_id = ?1
+                   AND attempt.test_id = publication.test_id
+                   AND attempt.revision = publication.revision",
                 [person.id],
                 |row| row.get(0),
             )?;
@@ -547,6 +634,213 @@ impl Db {
             });
         }
         Ok(views)
+    }
+
+    pub fn get_person(&self, person_id: i64) -> GateResult<PersonView> {
+        self.list_people()?
+            .into_iter()
+            .find(|view| view.person.id == person_id)
+            .ok_or(GateError::NotFound)
+    }
+
+    pub fn create_test(&self, input: &TestDefinitionInput) -> GateResult<()> {
+        validate_test_input(input)?;
+        let bank_ids_json = serde_json::to_string(&input.bank_ids)
+            .map_err(|error| GateError::Invalid(error.to_string()))?;
+        let connection = self.open_writable()?;
+        let result = connection.execute(
+            "INSERT INTO tests(
+                id, title, bank_ids_json, pass_threshold_percent, max_attempts,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), unixepoch())",
+            params![
+                input.id,
+                input.title.trim(),
+                bank_ids_json,
+                input.pass_threshold_percent,
+                input.max_attempts
+            ],
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) if is_constraint(&error) => Err(GateError::Conflict(
+                "that test id already exists".to_owned(),
+            )),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn update_test(&self, test_id: &str, input: &TestDefinitionInput) -> GateResult<()> {
+        validate_test_id(test_id)?;
+        validate_test_input(input)?;
+        if test_id != input.id {
+            return Err(GateError::Invalid("test id cannot be changed".to_owned()));
+        }
+        let bank_ids_json = serde_json::to_string(&input.bank_ids)
+            .map_err(|error| GateError::Invalid(error.to_string()))?;
+        let connection = self.open_writable()?;
+        expect_changed(connection.execute(
+            "UPDATE tests SET title = ?1, bank_ids_json = ?2,
+                    pass_threshold_percent = ?3, max_attempts = ?4,
+                    updated_at = unixepoch()
+             WHERE id = ?5",
+            params![
+                input.title.trim(),
+                bank_ids_json,
+                input.pass_threshold_percent,
+                input.max_attempts,
+                test_id
+            ],
+        )?)
+    }
+
+    pub fn list_tests(&self) -> GateResult<Vec<TestDefinitionRecord>> {
+        let connection = self.open_read_only()?;
+        let mut statement = connection.prepare(
+            "SELECT id, title, bank_ids_json, pass_threshold_percent, max_attempts,
+                    created_at, updated_at
+             FROM tests ORDER BY title, id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                    row.get::<_, u32>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(parse_test_row).collect()
+    }
+
+    pub fn get_test(&self, test_id: &str) -> GateResult<TestDefinitionRecord> {
+        validate_test_id(test_id)?;
+        self.list_tests()?
+            .into_iter()
+            .find(|test| test.id == test_id)
+            .ok_or(GateError::NotFound)
+    }
+
+    pub fn publish_test(&self, test_id: &str, quiz: &Quiz) -> GateResult<PublishedTest> {
+        let test = self.get_test(test_id)?;
+        quiz.validate()
+            .map_err(|error| GateError::Invalid(error.to_string()))?;
+        if quiz.title != test.title
+            || quiz.pass_threshold_percent != test.pass_threshold_percent
+            || quiz.max_attempts != test.max_attempts
+        {
+            return Err(GateError::Invalid(
+                "published quiz does not match the saved test definition".to_owned(),
+            ));
+        }
+        let quiz_json =
+            serde_json::to_string(quiz).map_err(|error| GateError::Invalid(error.to_string()))?;
+        let revision_source = serde_json::to_vec(&serde_json::json!({
+            "test_id": test.id,
+            "bank_ids": test.bank_ids,
+            "quiz": quiz,
+        }))
+        .map_err(|error| GateError::Invalid(error.to_string()))?;
+        let revision = format!("{:x}", Sha256::digest(revision_source));
+
+        let mut connection = self.open_writable()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let publication_id = transaction
+            .query_row(
+                "SELECT id FROM test_publications WHERE test_id = ?1 AND revision = ?2",
+                params![test_id, revision],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let publication_id = match publication_id {
+            Some(id) => id,
+            None => {
+                transaction.execute(
+                    "INSERT INTO test_publications(test_id, revision, quiz_json, published_at)
+                     VALUES (?1, ?2, ?3, unixepoch())",
+                    params![test_id, revision, quiz_json],
+                )?;
+                transaction.last_insert_rowid()
+            }
+        };
+        transaction.execute(
+            "INSERT INTO active_test_publication(singleton, publication_id) VALUES (1, ?1)
+             ON CONFLICT(singleton) DO UPDATE SET publication_id = excluded.publication_id",
+            [publication_id],
+        )?;
+        transaction.commit()?;
+        self.published_test()?.ok_or(GateError::NotFound)
+    }
+
+    pub fn published_test(&self) -> GateResult<Option<PublishedTest>> {
+        let connection = self.open_read_only()?;
+        let raw = connection
+            .query_row(
+                "SELECT publication.id, publication.test_id, publication.revision,
+                        publication.quiz_json, publication.published_at
+                 FROM active_test_publication active
+                 JOIN test_publications publication ON publication.id = active.publication_id
+                 WHERE active.singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        raw.map(
+            |(publication_id, test_id, revision, quiz_json, published_at)| {
+                validate_test_id(&test_id)?;
+                validate_revision(&revision)?;
+                let quiz = Quiz::from_slice(quiz_json.as_bytes())
+                    .map_err(|error| GateError::Invalid(error.to_string()))?;
+                Ok(PublishedTest {
+                    publication_id,
+                    test_id,
+                    revision,
+                    quiz,
+                    published_at,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn ensure_legacy_test(&self, quiz: &Quiz) -> GateResult<PublishedTest> {
+        if let Some(published) = self.published_test()? {
+            return Ok(published);
+        }
+        if self.list_tests()?.is_empty() {
+            self.create_test(&TestDefinitionInput {
+                id: LEGACY_BANK_ID.to_owned(),
+                title: quiz.title.clone(),
+                bank_ids: vec![LEGACY_BANK_ID.to_owned()],
+                pass_threshold_percent: quiz.pass_threshold_percent,
+                max_attempts: quiz.max_attempts,
+            })?;
+        }
+        let published = self.publish_test(LEGACY_BANK_ID, quiz)?;
+        let connection = self.open_writable()?;
+        connection.execute(
+            "INSERT INTO exam_passes(person_id, test_id, revision, passed_at)
+             SELECT id, ?1, ?2, passed_at FROM persons WHERE passed_at IS NOT NULL
+             ON CONFLICT(person_id, test_id, revision) DO NOTHING",
+            params![published.test_id, published.revision],
+        )?;
+        connection.execute(
+            "UPDATE persons SET passed_at = NULL WHERE passed_at IS NOT NULL",
+            [],
+        )?;
+        Ok(published)
     }
 
     fn open_writable(&self) -> GateResult<Connection> {
@@ -592,7 +886,7 @@ fn load_keys(connection: &Connection, person_id: i64) -> GateResult<Vec<KeyRecor
 
 fn load_bindings(connection: &Connection, person_id: i64) -> GateResult<Vec<BindingRecord>> {
     let mut statement = connection.prepare(
-        "SELECT id, person_id, ssh_key_id, unix_username, bank_id, enabled
+        "SELECT id, person_id, ssh_key_id, unix_username, enabled
          FROM login_bindings WHERE person_id = ?1 ORDER BY id",
     )?;
     let rows = statement.query_map([person_id], |row| {
@@ -601,19 +895,16 @@ fn load_bindings(connection: &Connection, person_id: i64) -> GateResult<Vec<Bind
             row.get::<_, i64>(1)?,
             row.get::<_, Option<i64>>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, bool>(5)?,
+            row.get::<_, bool>(4)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, person_id, ssh_key_id, unix_username, bank_id, enabled) = row?;
-        validate_bank_id(&bank_id).map_err(|error| GateError::Invalid(error.to_string()))?;
+        let (id, person_id, ssh_key_id, unix_username, enabled) = row?;
         Ok(BindingRecord {
             id,
             person_id,
             ssh_key_id,
             unix_username,
-            bank_id,
             enabled,
         })
     })
@@ -647,6 +938,9 @@ pub fn validate_username_syntax(value: &str) -> GateResult<()> {
 
 pub fn validate_unix_username(value: &str) -> GateResult<()> {
     validate_username_syntax(value)?;
+    #[cfg(not(unix))]
+    return Ok(());
+    #[cfg(unix)]
     match User::from_name(value) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(GateError::Invalid(
@@ -674,6 +968,88 @@ fn is_constraint(error: &rusqlite::Error) -> bool {
     )
 }
 
+fn active_test_identity(connection: &Connection) -> GateResult<Option<(String, String)>> {
+    connection
+        .query_row(
+            "SELECT publication.test_id, publication.revision
+             FROM active_test_publication active
+             JOIN test_publications publication ON publication.id = active.publication_id
+             WHERE active.singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn parse_test_row(
+    row: (String, String, String, u32, u32, i64, i64),
+) -> GateResult<TestDefinitionRecord> {
+    let (id, title, bank_ids_json, threshold, attempts, created_at, updated_at) = row;
+    validate_test_id(&id)?;
+    let bank_ids: Vec<String> = serde_json::from_str(&bank_ids_json)
+        .map_err(|error| GateError::Invalid(format!("invalid stored bank list: {error}")))?;
+    let input = TestDefinitionInput {
+        id: id.clone(),
+        title: title.clone(),
+        bank_ids: bank_ids.clone(),
+        pass_threshold_percent: threshold,
+        max_attempts: attempts,
+    };
+    validate_test_input(&input)?;
+    Ok(TestDefinitionRecord {
+        id,
+        title,
+        bank_ids,
+        pass_threshold_percent: threshold,
+        max_attempts: attempts,
+        created_at,
+        updated_at,
+    })
+}
+
+fn validate_test_input(input: &TestDefinitionInput) -> GateResult<()> {
+    validate_test_id(&input.id)?;
+    validate_display_name(&input.title)?;
+    if input.bank_ids.is_empty() || input.bank_ids.len() > 50 {
+        return Err(GateError::Invalid(
+            "a test must contain between 1 and 50 question banks".to_owned(),
+        ));
+    }
+    let mut unique = HashSet::new();
+    for bank_id in &input.bank_ids {
+        validate_bank_id(bank_id).map_err(|error| GateError::Invalid(error.to_string()))?;
+        if !unique.insert(bank_id) {
+            return Err(GateError::Invalid(
+                "a test cannot contain duplicate question banks".to_owned(),
+            ));
+        }
+    }
+    if !(1..=100).contains(&input.pass_threshold_percent) {
+        return Err(GateError::Invalid(
+            "pass threshold must be between 1 and 100".to_owned(),
+        ));
+    }
+    if !(1..=100).contains(&input.max_attempts) {
+        return Err(GateError::Invalid(
+            "maximum attempts must be between 1 and 100".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_test_id(value: &str) -> GateResult<()> {
+    validate_bank_id(value).map_err(|error| GateError::Invalid(error.to_string()))
+}
+
+fn validate_revision(value: &str) -> GateResult<()> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(GateError::Invalid("invalid test revision".to_owned()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,7 +1062,22 @@ mod tests {
         let directory = TempDir::new().unwrap();
         let db = Db::new(directory.path().join("gate.db"), timeout);
         db.initialize().unwrap();
+        db.ensure_legacy_test(&sample_quiz()).unwrap();
         (directory, db)
+    }
+
+    fn sample_quiz() -> Quiz {
+        Quiz {
+            title: "Safety".to_owned(),
+            environment: Default::default(),
+            pass_threshold_percent: 80,
+            max_attempts: 3,
+            questions: vec![crate::quiz::Question {
+                prompt: "Ready?".to_owned(),
+                choices: vec!["Yes".to_owned(), "No".to_owned()],
+                correct_index: 0,
+            }],
+        }
     }
 
     fn binding(person_id: i64) -> BindingInput {
@@ -694,7 +1085,6 @@ mod tests {
             person_id,
             ssh_key_id: None,
             unix_username: "root".to_owned(),
-            bank_id: LEGACY_BANK_ID.to_owned(),
         }
     }
 
@@ -716,6 +1106,8 @@ mod tests {
         }
         db.record_attempt(&AttemptInput {
             person_id: person,
+            test_id: LEGACY_BANK_ID,
+            revision: &db.published_test().unwrap().unwrap().revision,
             score: 4,
             total: 4,
             passed: true,
@@ -786,6 +1178,8 @@ mod tests {
         for _ in 0..3 {
             db.record_attempt(&AttemptInput {
                 person_id: person,
+                test_id: LEGACY_BANK_ID,
+                revision: &db.published_test().unwrap().unwrap().revision,
                 score: 0,
                 total: 1,
                 passed: false,
@@ -797,6 +1191,8 @@ mod tests {
         assert!(matches!(
             db.record_attempt(&AttemptInput {
                 person_id: person,
+                test_id: LEGACY_BANK_ID,
+                revision: &db.published_test().unwrap().unwrap().revision,
                 score: 1,
                 total: 1,
                 passed: true,
@@ -839,7 +1235,49 @@ mod tests {
     #[test]
     fn validates_unix_users() {
         validate_unix_username("root").unwrap();
+        #[cfg(unix)]
         assert!(validate_unix_username("definitely_missing_ssh_exam_user").is_err());
+        assert!(validate_unix_username("Invalid!").is_err());
+    }
+
+    #[test]
+    fn publishing_changed_content_requires_a_new_pass() {
+        let (_directory, db) = database(Duration::from_secs(1));
+        let person = db.create_person("Alice").unwrap();
+        let key = db.add_key(person, KEY_1).unwrap();
+        db.add_binding(&binding(person)).unwrap();
+        let first = db.published_test().unwrap().unwrap();
+        db.record_attempt(&AttemptInput {
+            person_id: person,
+            test_id: &first.test_id,
+            revision: &first.revision,
+            score: 1,
+            total: 1,
+            passed: true,
+            answers_json: "[0]",
+            max_attempts: 3,
+        })
+        .unwrap();
+        assert!(
+            db.resolve_policy("root", &key.fingerprint)
+                .unwrap()
+                .unwrap()
+                .passed
+        );
+
+        let mut changed = sample_quiz();
+        changed.questions[0].prompt = "Still ready?".to_owned();
+        let second = db.publish_test(LEGACY_BANK_ID, &changed).unwrap();
+        assert_ne!(first.revision, second.revision);
+        assert!(
+            !db.resolve_policy("root", &key.fingerprint)
+                .unwrap()
+                .unwrap()
+                .passed
+        );
+
+        let republished = db.publish_test(LEGACY_BANK_ID, &changed).unwrap();
+        assert_eq!(second.revision, republished.revision);
     }
 
     #[test]
@@ -853,7 +1291,6 @@ mod tests {
             person_id: person,
             ssh_key_id: Some(key.id),
             unix_username: "root".to_owned(),
-            bank_id: LEGACY_BANK_ID.to_owned(),
         })
         .unwrap();
         assert!(matches!(
@@ -886,14 +1323,14 @@ mod tests {
 
         db.initialize().unwrap();
         let view = db.list_people().unwrap().pop().unwrap();
-        assert_eq!(view.bindings[0].bank_id, LEGACY_BANK_ID);
+        assert_eq!(view.bindings[0].unix_username, "root");
         let connection = db.open_read_only().unwrap();
         let versions: u32 = connection
             .query_row("SELECT count(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(versions, 3);
+        assert_eq!(versions, 4);
     }
 
     #[test]
@@ -927,9 +1364,54 @@ mod tests {
         let views = db.list_people().unwrap();
         assert_eq!(views.len(), 2);
         assert_eq!(views[0].bindings.len(), 1);
-        assert_eq!(views[0].bindings[0].bank_id, "host-ssh");
         assert!(views[0].bindings[0].enabled);
         assert_eq!(views[1].bindings.len(), 1);
-        assert_eq!(views[1].bindings[0].bank_id, "network-topology");
+        assert_eq!(views[1].bindings[0].unix_username, "root");
+    }
+
+    #[test]
+    fn migration_from_v3_carries_pass_once_then_clears_legacy_state() {
+        let directory = TempDir::new().unwrap();
+        let db = Db::new(directory.path().join("gate.db"), Duration::from_secs(1));
+        let connection = db.open_writable().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+                 INSERT INTO schema_migrations(version) VALUES (1), (2), (3);",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATION_1).unwrap();
+        connection.execute_batch(MIGRATION_2).unwrap();
+        connection.execute_batch(MIGRATION_3).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO persons(id, display_name, passed_at, created_at)
+                     VALUES (1, 'Migrated', 1234, 1);
+                 INSERT INTO ssh_keys(
+                     id, person_id, fingerprint, key_type, key_base64, created_at
+                 ) VALUES (
+                     1, 1, 'SHA256:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ',
+                     'ssh-ed25519', 'aGVsbG8=', 1
+                 );
+                 INSERT INTO login_bindings(person_id, unix_username, created_at)
+                     VALUES (1, 'root', 1);",
+            )
+            .unwrap();
+        drop(connection);
+
+        db.initialize().unwrap();
+        db.ensure_legacy_test(&sample_quiz()).unwrap();
+        let policy = db
+            .resolve_policy("root", "SHA256:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ")
+            .unwrap()
+            .unwrap();
+        assert!(policy.passed);
+        let connection = db.open_read_only().unwrap();
+        let legacy_pass: Option<i64> = connection
+            .query_row("SELECT passed_at FROM persons WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(legacy_pass.is_none());
     }
 }

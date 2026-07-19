@@ -24,7 +24,7 @@ use ratatui::{
 use ssh_exam_gate::{
     config::AppConfig,
     db::{AttemptInput, Db, GateError, PendingIdentity},
-    quiz::{PreparedQuiz, QuizCatalog, Score, LEGACY_BANK_ID},
+    quiz::{PreparedQuiz, Score},
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -53,8 +53,6 @@ struct Arguments {
     username: String,
     #[arg(long)]
     fingerprint: String,
-    #[arg(long, default_value = LEGACY_BANK_ID)]
-    bank: String,
     #[arg(long, value_enum, default_value = "bilingual")]
     language: Language,
 }
@@ -132,14 +130,15 @@ fn run(arguments: Arguments) -> Result<()> {
         bail!("session identity validation failed");
     }
     let config = AppConfig::load(&arguments.config)?;
-    let catalog = QuizCatalog::new(config.quiz_path.clone(), config.quiz_directory.clone());
-    let quiz = catalog.load(&arguments.bank)?;
     let db = Db::new(&config.database_path, config.busy_timeout());
     let identity = db
         .load_identity(&arguments.username, &arguments.fingerprint)?
         .ok_or_else(|| anyhow::anyhow!("session identity validation failed"))?;
-    if identity.bank_id != arguments.bank {
-        bail!("session bank validation failed");
+    let published = db
+        .published_test()?
+        .ok_or_else(|| anyhow::anyhow!("no test is currently published"))?;
+    if identity.test_id != published.test_id || identity.revision != published.revision {
+        bail!("published test changed; reconnect to start the current test");
     }
     if identity.passed {
         bail!(
@@ -150,7 +149,7 @@ fn run(arguments: Arguments) -> Result<()> {
             )
         );
     }
-    if identity.attempt_count >= quiz.max_attempts {
+    if identity.attempt_count >= published.quiz.max_attempts {
         bail!(
             "{}",
             arguments.language.text(
@@ -160,7 +159,7 @@ fn run(arguments: Arguments) -> Result<()> {
         );
     }
 
-    let mut app = ExamApp::new(quiz.prepare(), identity, arguments.language);
+    let mut app = ExamApp::new(published.quiz.prepare(), identity, arguments.language);
     let mut terminal = TerminalGuard::enter()?;
     loop {
         terminal.terminal.draw(|frame| render(frame, &app))?;
@@ -208,6 +207,8 @@ fn submit_answer(app: &mut ExamApp, db: &Db) -> Result<()> {
     let attempt_number = db
         .record_attempt(&AttemptInput {
             person_id: app.identity.person_id,
+            test_id: &app.identity.test_id,
+            revision: &app.identity.revision,
             score: score.correct,
             total: score.total,
             passed: score.passed,

@@ -25,7 +25,8 @@ Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或�
 ## 功能亮点
 
 - **首次登录 TUI 考试**：拦截指定的 OpenSSH 公钥登录。
-- **多文件题库**：可分别维护宿主机、Docker、网络和通用知识题目。
+- **JSON 题库导入**：可分别维护宿主机、Docker、网络和通用知识题目。
+- **组合测试**：保存多个草稿，按顺序组合多个题库，并发布一个不可变的当前版本。
 - **中英双语**：Web 与 TUI 支持英文、中文和双语模式。
 - **公钥身份识别**：使用 Unix 账号 + SHA256 指纹；公钥注释和邮箱仅是标签。
 - **通过后恢复普通 SSH**：Shell、远程命令、VS Code 和转发继续由现有 `sshd`
@@ -42,13 +43,13 @@ flowchart LR
     P -->|待考试| T[强制 PTY 考试]
     T --> D[(SQLite)]
     P -->|已通过| H[正常 SSH 会话]
-    A[回环 Web 管理端] --> D
+    A[回环 Web 管理端和 CLI] --> D
     A --> Q[JSON 题库]
 ```
 
 OpenSSH 把 `%u`、`%f`、`%t`、`%k` 交给 `ssh-exam-key-policy`。策略程序依次
-核对 Unix 账号、公钥指纹、类型、内容、人员和访问映射，全部匹配后才输出一行
-authorized-keys 规则；任何异常都默认拒绝。
+核对 Unix 账号、公钥指纹、类型、内容、人员、访问映射和当前测试版本，全部匹配后
+才输出一行 authorized-keys 规则；任何异常都默认拒绝。
 
 待考试用户收到 `restrict,pty` 和强制执行的 `ssh-exam-tui` 命令；通过后策略只
 返回登记的公钥，不再附加强制命令或转发限制，连接由现有 `sshd` 配置正常处理。
@@ -58,6 +59,10 @@ authorized-keys 规则；任何异常都默认拒绝。
 > Unix 账号和 `sshd` 所允许的 Shell、远程命令、SFTP、VS Code 和转发能力。
 > 部署 `v0.3.x` 前必须复核原有 ProxyJump 映射。
 
+> [!NOTE]
+> schema v4 不再让访问映射选择题库。所有受控人员统一执行当前发布的测试版本。
+> 发布内容发生变化后必须重新通过；重复发布相同内容会复用 revision，不会无故要求重考。
+
 ## 快速开始
 
 ### 1. 下载预构建版本
@@ -65,7 +70,7 @@ authorized-keys 规则；任何异常都默认拒绝。
 预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
 
 ```sh
-VERSION=v0.3.1
+VERSION=v0.4.0
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -88,46 +93,43 @@ ssh-exam-admin       数据库迁移和回环 Web 管理端
 编辑 `config.example.json`，替换所有示例路径。`quiz_path` 是兼容旧版本的
 `legacy` 题库；设置 `quiz_directory` 后可启用额外的 `*.json` 题库文件。
 
-### 3. 初始化管理员密码
+### 3. 初始化数据库和管理员密码
 
-在目标机器上生成密码哈希。明文密码只从当前终端读取，不写入
+明文密码只从标准输入读取，不出现在命令行参数中。`init` 会创建数据库、执行迁移、
+发布兼容的 `legacy` 测试、生成随机会话密钥，并在 Unix 上以 `0600` 权限原子写入
 `admin-auth.json`。
 
 ```sh
 read -rsp 'Admin password: ' ADMIN_PASSWORD
 printf '\n'
-PASSWORD_HASH=$(printf '%s' "$ADMIN_PASSWORD" | \
-  /usr/local/sbin/ssh-exam-admin hash-password)
+printf '%s' "$ADMIN_PASSWORD" | \
+  /usr/local/sbin/ssh-exam-admin init --config /etc/ssh-exam/config.json
 unset ADMIN_PASSWORD
-
-SESSION_SECRET=$(openssl rand -base64 32)
 ```
 
-创建权限为 `0600` 的认证文件：
+只修改管理员密码并保留会话密钥：
 
-```json
-{
-  "password_hash": "<PASSWORD_HASH>",
-  "session_secret_base64": "<SESSION_SECRET>",
-  "session_ttl_seconds": 28800
-}
+```sh
+read -rsp 'New admin password: ' ADMIN_PASSWORD
+printf '\n'
+printf '%s' "$ADMIN_PASSWORD" | \
+  /usr/local/sbin/ssh-exam-admin set-admin-password \
+  --config /etc/ssh-exam/config.json
+unset ADMIN_PASSWORD
 ```
 
-用前面两个命令的输出替换占位符。不要直接部署
-`examples/admin-auth.example.json`，其中的公开占位值并不安全。
-
-- 修改管理员密码：重新生成哈希，只替换 `password_hash`，然后重启管理端。
-- 强制所有已登录会话退出：同时重新生成 `session_secret_base64`。
+不要直接部署 `examples/admin-auth.example.json`，其中的公开占位值并不安全。
+修改密码后重启管理服务。
 
 ### 4. 初始化并打开管理端
 
 ```sh
-sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin migrate \
-  --config /etc/ssh-exam/config.json
-
 sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin serve \
   --config /etc/ssh-exam/config.json
 ```
+
+已有安装需要在启动新二进制前执行一次 `migrate --config ...`；全新安装在 `init`
+过程中已经完成迁移。
 
 管理端拒绝非回环监听地址。通过 SSH 隧道访问：
 
@@ -138,11 +140,11 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 
 打开 `http://127.0.0.1:8787/`，然后：
 
-1. 创建人员。
-2. 登记一个或多个公钥。
-3. 为已有 Unix 账号创建访问映射。
-4. 选择该访问映射要求完成的题库。
-5. 需要重新考试时，在 People 页面重置考试状态。
+1. 在“题库”中导入或检查 JSON 题库。
+2. 创建测试，按组合顺序填写题库 ID，然后发布。
+3. 创建人员并进入人员详情页。
+4. 登记一个或多个公钥，并映射到已有 Unix 账号。
+5. 需要增加尝试次数时，在详情页重置当前考试。
 
 创建人员或访问映射仍然不会自动启用 OpenSSH 拦截。
 
@@ -155,12 +157,37 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 每个题库包含：
 
 - 标题和描述性环境（`host`、`docker`、`network`、`general`）；
-- 通过分数和最大尝试次数；
 - 一道或多道选择题。
 
-Web 的 Exam 页面可以创建题库，并编辑设置、题目、选项和答案。写入使用同目录
-临时文件、同步和原子重命名。环境字段只是说明信息，不会访问 Docker、创建容器
-或执行命令。
+旧题库 JSON 仍可包含 `pass_threshold_percent` 和 `max_attempts`；组合时由测试设置
+覆盖。Web 的“题库”页面可以校验 JSON 导入、查看/编辑题目并导出规范化 JSON。
+写入使用同目录临时文件、同步和原子重命名。环境字段只是说明信息，不会访问
+Docker、创建容器或执行命令。
+
+## 测试与发布
+
+测试包含稳定 ID、标题、有序题库 ID、通过分数和尝试次数。系统可以同时保存多个
+草稿。发布时会把所有题库解析成完整快照存入 SQLite，并根据测试身份、题库顺序、
+策略和题目计算 SHA-256 revision。
+
+- 编辑题库或草稿不会改变当前生效快照。
+- 发布变化后的内容会启用新 revision，并要求重新通过。
+- 重复发布等价内容会复用 revision。
+- 尝试和通过记录都绑定测试 ID + revision。
+
+常用命令行操作：
+
+```sh
+ssh-exam-admin import-bank --config /etc/ssh-exam/config.json \
+  --id host-ssh --file ./host-ssh.json
+ssh-exam-admin list-banks --config /etc/ssh-exam/config.json
+ssh-exam-admin create-test --config /etc/ssh-exam/config.json \
+  --id onboarding --title 'Server onboarding' \
+  --banks host-ssh,docker-ssh --pass-threshold 80 --max-attempts 3
+ssh-exam-admin list-tests --config /etc/ssh-exam/config.json
+ssh-exam-admin publish-test --config /etc/ssh-exam/config.json --id onboarding
+ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
+```
 
 ## 先隔离测试，再改生产
 
@@ -222,7 +249,7 @@ sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
    `ssh-exam-gated`。
 2. 安装二进制、服务账号、配置、状态目录权限和检查后的 sudoers 规则。使用
    `visudo -cf deploy/sudoers.snippet` 校验。
-3. 通过管理端登记一个临时人员、公钥、访问映射和题库。
+3. 通过管理端登记临时人员、公钥和访问映射，导入题库并发布临时测试。
 4. 使用生产应用配置完整执行一次隔离测试。
 5. 只把需要拦截的账号加入 `ssh-exam-gated`，再安装审核后的
    `deploy/sshd_config.snippet`。
@@ -260,10 +287,11 @@ ssh -p <SSH_PORT> -t person-account@bastion.example.org
 
 - 身份由请求的 Unix 账号和公钥 SHA256 指纹确定，公钥注释/邮箱不参与识别。
 - 只有人员、公钥和访问映射都启用时，策略程序才输出授权规则。
-- 管理端仅监听回环地址，使用 Argon2id、签名 HttpOnly Cookie、CSRF Token 和
-  一次性签名提示。
+- 管理端仅监听回环地址，使用 Argon2id、登录失败限速、签名 HttpOnly Cookie、
+  CSRF Token 和一次性签名提示。
 - 访问映射可以应用于人员的所有已登记密钥，也可以只应用于一个指定设备密钥。
-- 为兼容旧版本，通过状态目前属于人员；该人员所有已启用密钥和映射继承通过状态。
+- 通过状态属于人员和不可变测试版本；只有该 revision 仍为当前版本时，该人员所有
+  已启用密钥和映射才继承通过状态。
 - 必须保留不受门禁控制的恢复账号。策略默认拒绝，因此数据库路径或权限错误会让
   被门禁控制的公钥登录失败。
 

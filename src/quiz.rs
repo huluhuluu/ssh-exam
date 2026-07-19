@@ -100,6 +100,12 @@ fn default_max_attempts() -> u32 {
 }
 
 impl Quiz {
+    pub fn from_slice(raw: &[u8]) -> Result<Self> {
+        let quiz: Self = serde_json::from_slice(raw).context("invalid quiz JSON")?;
+        quiz.validate()?;
+        Ok(quiz)
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         regular_file_metadata(path)?;
         let raw = fs::read(path)
@@ -302,6 +308,12 @@ impl Quiz {
             questions,
         }
     }
+
+    pub fn to_pretty_json(&self) -> Result<Vec<u8>> {
+        let mut encoded = serde_json::to_vec_pretty(self).context("failed to serialize quiz")?;
+        encoded.push(b'\n');
+        Ok(encoded)
+    }
 }
 
 impl QuizCatalog {
@@ -360,6 +372,51 @@ impl QuizCatalog {
     pub fn load(&self, id: &str) -> Result<Quiz> {
         let path = self.bank_path(id)?;
         Quiz::load(&path).with_context(|| format!("failed to load quiz bank {id}"))
+    }
+
+    pub fn import(&self, id: &str, raw: &[u8]) -> Result<QuizBank> {
+        if raw.len() > 1024 * 1024 {
+            bail!("quiz bank JSON must not exceed 1 MiB");
+        }
+        let quiz = Quiz::from_slice(raw)?;
+        self.create(id, &quiz)
+    }
+
+    pub fn compose(
+        &self,
+        title: String,
+        bank_ids: &[String],
+        pass_threshold_percent: u32,
+        max_attempts: u32,
+    ) -> Result<Quiz> {
+        if bank_ids.is_empty() {
+            bail!("a test must include at least one question bank");
+        }
+        let mut unique = std::collections::HashSet::new();
+        let mut environment = None;
+        let mut questions = Vec::new();
+        for bank_id in bank_ids {
+            validate_bank_id(bank_id)?;
+            if !unique.insert(bank_id.as_str()) {
+                bail!("a test cannot include the same question bank twice");
+            }
+            let bank = self.load(bank_id)?;
+            environment = match environment {
+                None => Some(bank.environment),
+                Some(current) if current == bank.environment => Some(current),
+                Some(_) => Some(BankEnvironment::General),
+            };
+            questions.extend(bank.questions);
+        }
+        let quiz = Quiz {
+            title,
+            environment: environment.unwrap_or_default(),
+            pass_threshold_percent,
+            max_attempts,
+            questions,
+        };
+        quiz.validate()?;
+        Ok(quiz)
     }
 
     pub fn ensure_writable(&self) -> Result<()> {
@@ -506,6 +563,8 @@ fn quiz_file_mode(path: &Path) -> Result<u32> {
 }
 
 fn create_temporary_file(path: &Path, mode: u32) -> Result<(PathBuf, File)> {
+    #[cfg(not(unix))]
+    let _ = mode;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

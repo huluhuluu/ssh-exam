@@ -28,7 +28,9 @@ rules before access is granted.
 ## Highlights
 
 - **First-login TUI exam** for selected OpenSSH public-key logins.
-- **Multi-file quiz banks** for host, Docker, network, or general topics.
+- **JSON question-bank import** for host, Docker, network, or general topics.
+- **Composable tests:** save multiple drafts, combine banks in a defined order,
+  and publish one immutable active revision.
 - **Bilingual Web and TUI** with English, Chinese, and bilingual modes.
 - **Key-based identity** using Unix account + SHA256 fingerprint; key comments
   and email-like labels are metadata only.
@@ -47,13 +49,14 @@ flowchart LR
     P -->|Pending| T[Forced PTY exam]
     T --> D[(SQLite)]
     P -->|Passed| H[Normal SSH session]
-    A[Loopback Web admin] --> D
-    A --> Q[JSON quiz banks]
+    A[Loopback Web admin and CLI] --> D
+    A --> Q[JSON question banks]
 ```
 
 OpenSSH supplies `%u`, `%f`, `%t`, and `%k` to `ssh-exam-key-policy`. The helper
 validates the requested Unix account, fingerprint, key type, key blob, person,
-and Access mapping before it emits an authorized-keys line. It fails closed.
+Access mapping, and current test revision before it emits an authorized-keys
+line. It fails closed.
 
 Pending users receive `restrict,pty` plus a forced `ssh-exam-tui` command.
 Passed users receive the registered public key without forced-command or
@@ -66,6 +69,12 @@ connection normally.
 > VS Code, and forwarding capabilities allowed by `sshd` and the Unix account.
 > Review old ProxyJump mappings before deploying `v0.3.x`.
 
+> [!NOTE]
+> Schema v4 removes question-bank selection from Access mappings. One globally
+> published test revision applies to every gated person. Publishing changed
+> content requires users to pass the new revision; republishing identical
+> content keeps the same revision and existing passes.
+
 ## Quick Start
 
 ### 1. Download a release
@@ -74,7 +83,7 @@ Prebuilt releases target Linux x86_64 with glibc. Build from source for other
 architectures or incompatible glibc versions.
 
 ```sh
-VERSION=v0.3.1
+VERSION=v0.4.0
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -99,48 +108,44 @@ Edit `config.example.json` and replace every example path. `quiz_path` is the
 backwards-compatible `legacy` bank. Set `quiz_directory` to enable additional
 `*.json` banks.
 
-### 3. Initialize the administrator password
+### 3. Initialize the database and administrator password
 
-Generate the password hash on the target host. The plaintext password is read
-from the terminal and is never stored in `admin-auth.json`.
+The plaintext password is read from standard input, never from a command-line
+argument. `init` creates the database, applies migrations, publishes the
+backwards-compatible `legacy` test, generates a random session secret, and
+atomically writes `admin-auth.json` with mode `0600` on Unix.
 
 ```sh
 read -rsp 'Admin password: ' ADMIN_PASSWORD
 printf '\n'
-PASSWORD_HASH=$(printf '%s' "$ADMIN_PASSWORD" | \
-  /usr/local/sbin/ssh-exam-admin hash-password)
+printf '%s' "$ADMIN_PASSWORD" | \
+  /usr/local/sbin/ssh-exam-admin init --config /etc/ssh-exam/config.json
 unset ADMIN_PASSWORD
-
-SESSION_SECRET=$(openssl rand -base64 32)
 ```
 
-Create the auth file with mode `0600`:
+Rotate only the administrator password while preserving the session secret:
 
-```json
-{
-  "password_hash": "<PASSWORD_HASH>",
-  "session_secret_base64": "<SESSION_SECRET>",
-  "session_ttl_seconds": 28800
-}
+```sh
+read -rsp 'New admin password: ' ADMIN_PASSWORD
+printf '\n'
+printf '%s' "$ADMIN_PASSWORD" | \
+  /usr/local/sbin/ssh-exam-admin set-admin-password \
+  --config /etc/ssh-exam/config.json
+unset ADMIN_PASSWORD
 ```
 
-Replace the placeholders with the two command outputs. Never deploy
-`examples/admin-auth.example.json`; its public placeholder values are unsafe.
-
-- To change the admin password, generate a new hash and replace only
-  `password_hash`, then restart the admin service.
-- To invalidate every active session, also generate a new
-  `session_secret_base64` value.
+Never deploy `examples/admin-auth.example.json`; its public placeholder values
+are unsafe. Restart the admin service after rotating the password.
 
 ### 4. Initialize and open the admin
 
 ```sh
-sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin migrate \
-  --config /etc/ssh-exam/config.json
-
 sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin serve \
   --config /etc/ssh-exam/config.json
 ```
+
+For an existing installation, run `migrate --config ...` once before starting
+the new binary. Fresh installations already migrate during `init`.
 
 The admin refuses non-loopback bind addresses. Reach it through an SSH tunnel:
 
@@ -151,11 +156,11 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 
 Open `http://127.0.0.1:8787/`, then:
 
-1. Create a person.
-2. Register one or more public keys.
-3. Create an Access mapping for an existing Unix account.
-4. Select the quiz bank required by that mapping.
-5. Reset the person's exam whenever another attempt is required.
+1. Import or review JSON files under **Question banks**.
+2. Create a test, list its bank IDs in composition order, and publish it.
+3. Create a person and open the person's detail page.
+4. Register one or more public keys and map them to an existing Unix account.
+5. Reset the current exam on the detail page when another attempt is required.
 
 Creating a person or mapping still does not activate OpenSSH interception.
 
@@ -168,13 +173,41 @@ every safe `*.json` filename stem becomes another bank id. For example,
 Each bank defines:
 
 - a title and descriptive environment (`host`, `docker`, `network`, `general`);
-- a pass threshold and maximum attempt count;
 - one or more multiple-choice questions.
 
-The Web Exam view creates banks and edits settings, questions, choices, and
-answers. Writes use a same-directory temporary file, sync, and atomic rename.
+Legacy bank JSON may still contain `pass_threshold_percent` and `max_attempts`;
+saved test settings override those values when banks are composed. The Web
+Question banks view validates JSON imports, displays questions, supports edits,
+and exports normalized JSON. Writes use a same-directory temporary file, sync,
+and atomic rename.
 The environment field is descriptive; it does not access Docker, provision a
 container, or run commands.
+
+## Tests and Publication
+
+A saved test contains a stable ID, title, ordered bank IDs, pass threshold, and
+attempt limit. Multiple draft tests can coexist. Publishing resolves all bank
+files into a complete JSON snapshot stored in SQLite and computes a SHA-256
+revision from the test identity, bank order, policy, and questions.
+
+- Editing a bank or draft does not mutate the active snapshot.
+- Publishing changed content activates a new revision and requires a new pass.
+- Republishing byte-equivalent content reuses its revision.
+- Attempts and passes are recorded against test ID + revision.
+
+Useful non-interactive operations:
+
+```sh
+ssh-exam-admin import-bank --config /etc/ssh-exam/config.json \
+  --id host-ssh --file ./host-ssh.json
+ssh-exam-admin list-banks --config /etc/ssh-exam/config.json
+ssh-exam-admin create-test --config /etc/ssh-exam/config.json \
+  --id onboarding --title 'Server onboarding' \
+  --banks host-ssh,docker-ssh --pass-threshold 80 --max-attempts 3
+ssh-exam-admin list-tests --config /etc/ssh-exam/config.json
+ssh-exam-admin publish-test --config /etc/ssh-exam/config.json --id onboarding
+ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
+```
 
 ## Test Before Production
 
@@ -240,7 +273,8 @@ Docker group membership.
 2. Install the binaries, service identities, configuration, state permissions,
    and reviewed sudoers rule. Validate it with
    `visudo -cf deploy/sudoers.snippet`.
-3. Register a disposable person, key, mapping, and bank through the admin.
+3. Register a disposable person, key, and mapping; import banks and publish a
+   disposable test through the admin.
 4. Complete the isolated test workflow with the production application config.
 5. Add only intended accounts to `ssh-exam-gated` and install the reviewed
    `deploy/sshd_config.snippet`.
@@ -281,12 +315,13 @@ After passing, reconnect with VS Code normally.
 - Identity is the requested Unix account plus the SHA256 fingerprint of the
   presented public key. Key comments and email addresses are not identity.
 - Policy output is emitted only for enabled people, keys, and mappings.
-- The admin is loopback-only and uses Argon2id, signed HttpOnly cookies, CSRF
-  tokens, and one-time signed flash messages.
+- The admin is loopback-only and uses Argon2id, failed-login throttling, signed
+  HttpOnly cookies, CSRF tokens, and one-time signed flash messages.
 - An Access mapping may apply to every registered key for a person or to one
   selected device key.
-- Pass state is currently person-level for backwards compatibility: all enabled
-  keys and mappings for the person inherit a pass.
+- Pass state belongs to the person and the immutable test revision. All enabled
+  keys and mappings for that person inherit the pass only while that revision
+  remains active.
 - Keep a recovery account outside the gated group. The gate fails closed, so a
   broken database path or permission can deny gated public-key logins.
 

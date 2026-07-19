@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ item.person.display_name }} - SSH Exam Gate{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="/people">{{ labels.people }}</a><span>/</span><span>{{ item.person.display_name }}</span></div>
+<div class="page-head">
+  <div><h1>{{ item.person.display_name }}</h1><p>ID {{ item.person.id }} | {{ labels.attempts }}: {{ item.attempt_count }}</p></div>
+  <div class="actions">
+    <form method="post" action="/persons/{{ item.person.id }}/enabled"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{% if item.person.enabled %}false{% else %}true{% endif %}"><button type="submit">{% if item.person.enabled %}{{ labels.disable_person }}{% else %}{{ labels.enable_person }}{% endif %}</button></form>
+    <form method="post" action="/persons/{{ item.person.id }}/reset"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">{{ labels.reset_exam }}</button></form>
+  </div>
+</div>
+{% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="band">
+  <div class="summary summary-compact">
+    <div><span>{{ labels.account_status }}</span><strong>{% if item.person.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</strong></div>
+    <div><span>{{ labels.exam_status }}</span><strong>{% if item.person.passed_at.is_some() %}<span class="status good">{{ labels.passed }}</span>{% else %}<span class="status pending">{{ labels.pending }}</span>{% endif %}</strong></div>
+    <div><span>{{ labels.device_keys }}</span><strong>{{ item.keys.len() }}</strong></div>
+    <div><span>{{ labels.access_mappings }}</span><strong>{{ item.mappings.len() }}</strong></div>
+  </div>
+</section>
+
+<section class="band" aria-labelledby="keys-heading">
+  <h2 id="keys-heading">{{ labels.device_keys }}</h2>
+  {% if item.keys.len() == 0 %}<div class="empty">{{ labels.no_device_keys }}</div>{% else %}
+  <div class="table-wrap"><table><thead><tr><th>{{ labels.fingerprint }}</th><th>{{ labels.type_and_label }}</th><th>{{ labels.status }}</th><th>{{ labels.actions }}</th></tr></thead><tbody>
+  {% for key in item.keys %}<tr><td><code>{{ key.fingerprint }}</code></td><td>{{ key.key_type }}{% if key.comment.is_some() %}<br><span class="muted">{{ key.comment.as_ref().unwrap() }}</span>{% endif %}</td><td>{% if key.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</td><td><div class="actions"><form method="post" action="/people/{{ item.person.id }}/keys/{{ key.id }}/enabled"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{% if key.enabled %}false{% else %}true{% endif %}"><button type="submit">{% if key.enabled %}{{ labels.disable }}{% else %}{{ labels.enable }}{% endif %}</button></form><form method="post" action="/people/{{ item.person.id }}/keys/{{ key.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">{{ labels.remove }}</button></form></div></td></tr>{% endfor %}
+  </tbody></table></div>{% endif %}
+  <form class="compact-form form-grid" method="post" action="/persons/{{ item.person.id }}/keys"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="wide"><label for="public-key">{{ labels.public_key }}</label><textarea id="public-key" name="public_key" placeholder="ssh-ed25519 AAAA... device-label" required></textarea></div><div><button class="primary" type="submit">{{ labels.add_device_key }}</button></div></form>
+</section>
+
+<section class="band" aria-labelledby="mappings-heading">
+  <h2 id="mappings-heading">{{ labels.access_mappings }}</h2><p class="help">{{ labels.mapping_help }}</p>
+  {% if item.mappings.len() == 0 %}<div class="empty">{{ labels.no_mappings }}</div>{% else %}
+  <div class="table-wrap"><table><thead><tr><th>{{ labels.unix_login }}</th><th>{{ labels.scope }}</th><th>{{ labels.status }}</th><th>{{ labels.action }}</th></tr></thead><tbody>
+  {% for mapping in item.mappings %}<tr><td><strong>{{ mapping.unix_username }}</strong></td><td>{{ mapping.scope }}</td><td>{% if mapping.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</td><td><form method="post" action="/people/{{ item.person.id }}/bindings/{{ mapping.id }}/enabled"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{% if mapping.enabled %}false{% else %}true{% endif %}"><button type="submit">{% if mapping.enabled %}{{ labels.disable }}{% else %}{{ labels.enable }}{% endif %}</button></form></td></tr>{% endfor %}
+  </tbody></table></div>{% endif %}
+  <form class="compact-form form-grid" method="post" action="/persons/{{ item.person.id }}/bindings"><input type="hidden" name="csrf" value="{{ csrf }}"><div><label for="account">{{ labels.unix_login }}</label><input id="account" name="unix_username" maxlength="32" required></div><div><label for="scope">{{ labels.scope }}</label><select id="scope" name="ssh_key_id"><option value="">{{ labels.all_registered_keys }}</option>{% for key in item.keys %}<option value="{{ key.id }}">{{ labels.selected_key }}: {{ key.fingerprint }}</option>{% endfor %}</select></div><div style="align-self:end"><button class="primary" type="submit">{{ labels.add_mapping }}</button></div></form>
+</section>
+{% endblock %}

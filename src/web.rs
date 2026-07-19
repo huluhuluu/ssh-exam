@@ -12,7 +12,7 @@ use argon2::{
 };
 use askama::Template;
 use axum::{
-    extract::{Form, Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
@@ -27,7 +27,10 @@ use sha2::Sha256;
 
 use crate::{
     config::AdminAuthConfig,
-    db::{BindingInput, Db, GateError, KeyRecord, PersonRecord, PersonView},
+    db::{
+        BindingInput, Db, GateError, KeyRecord, PersonRecord, PersonView, PublishedTest,
+        TestDefinitionInput, TestDefinitionRecord,
+    },
     quiz::{
         validate_bank_id, BankEnvironment, Question, Quiz, QuizBank, QuizCatalog, LEGACY_BANK_ID,
     },
@@ -38,6 +41,9 @@ const SESSION_COOKIE: &str = "ssh_exam_session";
 const LOGIN_CSRF_COOKIE: &str = "ssh_exam_login_csrf";
 const FLASH_COOKIE: &str = "ssh_exam_flash";
 const LANGUAGE_COOKIE: &str = "ssh_exam_language";
+const LOGIN_FAILURE_LIMIT: u32 = 8;
+const LOGIN_FAILURE_WINDOW_SECONDS: u64 = 60;
+const LOGIN_BLOCK_SECONDS: u64 = 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WebLanguage {
@@ -104,7 +110,8 @@ macro_rules! define_labels {
 define_labels! {
     overview => ("Overview", "概览"),
     people => ("People", "人员"),
-    exam => ("Exam", "考试"),
+    exam => ("Tests", "测试"),
+    question_banks => ("Question banks", "题库"),
     sign_out => ("Sign out", "退出登录"),
     language => ("Language", "语言"),
     administration => ("Administration", "管理控制台"),
@@ -127,7 +134,7 @@ define_labels! {
     banks => ("Banks", "题库"),
     access_model => ("Access model", "访问模型"),
     manage_people => ("Manage people", "管理人员"),
-    access_help => ("An Access mapping connects a registered person or device key to an existing Unix account and exam bank. Passed mappings use ordinary OpenSSH behavior and never configure the listener port.", "访问映射将注册人员或设备密钥关联到现有 Unix 账号和考试题库；通过后恢复普通 OpenSSH 行为，且不会配置监听端口。"),
+    access_help => ("An Access mapping connects a registered person or device key to an existing Unix account. The current published test controls qualification globally.", "访问映射将注册人员或设备密钥关联到现有 Unix 账号；当前发布测试统一控制考试资格。"),
     people_help => ("Registered identities, device keys, inherited exam status, and Access mappings.", "注册身份、设备密钥、继承的考试状态与访问映射。"),
     create_person => ("Create person", "创建人员"),
     create_person_help => ("Pass status belongs to the person and is inherited by every enabled registered key.", "通过状态属于人员，并由其所有已启用的注册密钥继承。"),
@@ -156,7 +163,7 @@ define_labels! {
     remove => ("Remove", "移除"),
     public_key => ("Public key", "公钥"),
     add_device_key => ("Add device key", "添加设备密钥"),
-    mapping_help => ("Map this person or one device key to an existing Unix login and exam bank. After passing, OpenSSH handles the connection normally.", "将此人员或某个设备密钥映射到现有 Unix 登录账号和考试题库；通过后由 OpenSSH 正常处理连接。"),
+    mapping_help => ("Map this person or one device key to an existing Unix login. After passing the current published test, OpenSSH handles the connection normally.", "将此人员或某个设备密钥映射到现有 Unix 登录账号；通过当前发布测试后由 OpenSSH 正常处理连接。"),
     no_mappings => ("No Access mappings are configured for this person.", "此人员尚未配置访问映射。"),
     unix_login => ("Unix login account", "Unix 登录账号"),
     scope => ("Scope", "范围"),
@@ -166,13 +173,9 @@ define_labels! {
     add_mapping => ("Add Access mapping", "添加访问映射"),
     exam_help => ("Changes are written atomically and apply when the next TUI session starts.", "更改以原子方式写入，并在下一个 TUI 会话启动时生效。"),
     configured_banks => ("Configured banks", "已配置题库"),
-    select => ("Select", "选择"),
-    selected => ("Selected", "已选择"),
     legacy_bank => ("Legacy quiz_path", "兼容 quiz_path"),
-    create_bank => ("Create bank", "创建题库"),
     bank_id => ("Bank ID", "题库 ID"),
     bank_id_help => ("Lowercase letters, digits, and single internal hyphens.", "使用小写字母、数字和单个连接短横线。"),
-    initial_question => ("Initial question", "初始问题"),
     choices => ("Choices", "选项"),
     choices_help => ("One choice per line; 2-20 unique choices.", "每行一个选项；需要 2-20 个不重复选项。"),
     correct_answer => ("Correct answer", "正确答案"),
@@ -190,6 +193,23 @@ define_labels! {
     add_question => ("Add question", "添加问题"),
     catalog_disabled => ("Catalog mode is disabled; configure quiz_directory to create additional banks.", "题库目录模式未启用；请配置 quiz_directory 以创建更多题库。"),
     educational_only => ("Environment metadata is descriptive educational scope only; this gate does not execute or provision Docker, hosts, or networks.", "环境元数据仅描述教学范围；本系统不会执行或配置 Docker、主机或网络。"),
+    view_details => ("View details", "查看详情"),
+    import_json => ("Import JSON", "导入 JSON"),
+    json_document => ("JSON document", "JSON 文档"),
+    export_json => ("Export JSON", "导出 JSON"),
+    saved_tests => ("Saved tests", "已保存测试"),
+    create_test => ("Create test", "创建测试"),
+    test_id => ("Test ID", "测试 ID"),
+    draft => ("Draft", "草稿"),
+    published => ("Published", "已发布"),
+    publish => ("Publish", "发布"),
+    bank_selection => ("Question bank IDs", "题库 ID"),
+    bank_selection_help => ("One bank ID per line. Order controls question composition.", "每行一个题库 ID，顺序决定题目组合顺序。"),
+    combined_questions => ("Combined questions", "组合题目数"),
+    save_test => ("Save test", "保存测试"),
+    current_revision => ("Current revision", "当前版本"),
+    no_published_test => ("No test is published.", "当前没有已发布测试。"),
+    import_help => ("Paste a complete question-bank JSON document. The server validates its schema and writes it atomically.", "粘贴完整题库 JSON 文档；服务器将校验格式并原子写入。"),
 }
 
 #[derive(Clone)]
@@ -197,9 +217,48 @@ pub struct WebState {
     db: Db,
     catalog: Arc<QuizCatalog>,
     quiz_lock: Arc<Mutex<()>>,
+    login_throttle: Arc<Mutex<LoginThrottle>>,
     password_hash: String,
     session_secret: Arc<Vec<u8>>,
     session_ttl_seconds: u64,
+}
+
+#[derive(Default)]
+struct LoginThrottle {
+    window_started_at: u64,
+    failures: u32,
+    blocked_until: u64,
+}
+
+impl LoginThrottle {
+    fn is_blocked(&mut self, now: u64) -> bool {
+        if self.blocked_until > now {
+            return true;
+        }
+        if now.saturating_sub(self.window_started_at) >= LOGIN_FAILURE_WINDOW_SECONDS {
+            self.window_started_at = now;
+            self.failures = 0;
+            self.blocked_until = 0;
+        }
+        false
+    }
+
+    fn record(&mut self, success: bool, now: u64) {
+        if success {
+            *self = Self::default();
+            return;
+        }
+        if self.window_started_at == 0
+            || now.saturating_sub(self.window_started_at) >= LOGIN_FAILURE_WINDOW_SECONDS
+        {
+            self.window_started_at = now;
+            self.failures = 0;
+        }
+        self.failures += 1;
+        if self.failures >= LOGIN_FAILURE_LIMIT {
+            self.blocked_until = now.saturating_add(LOGIN_BLOCK_SECONDS);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -238,25 +297,73 @@ struct PeopleTemplate {
     notice: String,
     error: String,
     people: Vec<PersonAdminView>,
-    banks: Vec<BankOption>,
     labels: Labels,
     current_path: &'static str,
 }
 
 #[derive(Template)]
-#[template(path = "exam.html")]
-struct ExamTemplate {
+#[template(path = "person.html")]
+struct PersonTemplate {
+    csrf: String,
+    active_page: &'static str,
+    notice: String,
+    error: String,
+    item: PersonAdminView,
+    labels: Labels,
+    current_path: String,
+}
+
+#[derive(Template)]
+#[template(path = "banks.html")]
+struct BanksTemplate {
+    csrf: String,
+    active_page: &'static str,
+    notice: String,
+    error: String,
+    banks: Vec<BankOption>,
+    catalog_enabled: bool,
+    labels: Labels,
+    current_path: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "bank.html")]
+struct BankTemplate {
     csrf: String,
     active_page: &'static str,
     notice: String,
     error: String,
     quiz: Quiz,
     bank_id: String,
-    banks: Vec<BankOption>,
-    catalog_enabled: bool,
     environment: &'static str,
     questions: Vec<QuestionAdminView>,
     answer_options: Vec<AnswerOption>,
+    labels: Labels,
+    current_path: String,
+}
+
+#[derive(Template)]
+#[template(path = "tests.html")]
+struct TestsTemplate {
+    csrf: String,
+    active_page: &'static str,
+    notice: String,
+    error: String,
+    tests: Vec<TestAdminView>,
+    banks: Vec<BankOption>,
+    labels: Labels,
+    current_path: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "test.html")]
+struct TestTemplate {
+    csrf: String,
+    active_page: &'static str,
+    notice: String,
+    error: String,
+    test: TestAdminView,
+    bank_ids_text: String,
     labels: Labels,
     current_path: String,
 }
@@ -282,8 +389,15 @@ struct MappingAdminView {
     id: i64,
     unix_username: String,
     scope: String,
-    bank_id: String,
     enabled: bool,
+}
+
+struct TestAdminView {
+    test: TestDefinitionRecord,
+    bank_names: String,
+    question_count: usize,
+    published: bool,
+    revision: String,
 }
 
 struct QuestionAdminView {
@@ -308,7 +422,6 @@ struct BankOption {
     environment: &'static str,
     question_count: usize,
     legacy: bool,
-    selected: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -350,7 +463,23 @@ struct AddBindingForm {
     csrf: String,
     unix_username: String,
     ssh_key_id: String,
+}
+
+#[derive(Deserialize)]
+struct ImportBankForm {
+    csrf: String,
     bank_id: String,
+    json: String,
+}
+
+#[derive(Deserialize)]
+struct TestForm {
+    csrf: String,
+    test_id: String,
+    title: String,
+    bank_ids: String,
+    pass_threshold_percent: String,
+    max_attempts: String,
 }
 
 #[derive(Deserialize)]
@@ -365,19 +494,6 @@ struct ExamSettingsForm {
 #[derive(Deserialize)]
 struct QuestionForm {
     csrf: String,
-    prompt: String,
-    choices: String,
-    correct_index: String,
-}
-
-#[derive(Deserialize)]
-struct CreateBankForm {
-    csrf: String,
-    bank_id: String,
-    title: String,
-    environment: String,
-    pass_threshold_percent: String,
-    max_attempts: String,
     prompt: String,
     choices: String,
     correct_index: String,
@@ -402,10 +518,12 @@ impl WebState {
                 quiz_path.display()
             )
         })?;
+        db.ensure_legacy_test(&catalog.load(LEGACY_BANK_ID)?)?;
         Ok(Self {
             db,
             catalog: Arc::new(catalog),
             quiz_lock: Arc::new(Mutex::new(())),
+            login_throttle: Arc::new(Mutex::new(LoginThrottle::default())),
             password_hash: auth.password_hash.clone(),
             session_secret: Arc::new(auth.session_secret()?),
             session_ttl_seconds: auth.session_ttl_seconds,
@@ -417,8 +535,14 @@ pub fn router(state: WebState) -> Router {
     Router::new()
         .route("/", get(overview))
         .route("/people", get(people_page))
-        .route("/exam", get(exam_page))
-        .route("/exam/:bank_id", get(exam_bank_page))
+        .route("/people/:id", get(person_page))
+        .route("/banks", get(banks_page).post(import_bank))
+        .route("/banks/:bank_id", get(bank_page))
+        .route("/banks/:bank_id/export", get(export_bank))
+        .route("/tests", get(tests_page).post(create_test))
+        .route("/tests/:test_id", get(test_page).post(update_test))
+        .route("/tests/:test_id/publish", post(publish_test))
+        .route("/exam", get(legacy_exam_redirect))
         .route("/language/:language", get(select_language))
         .route("/login", get(login_page).post(login))
         .route("/logout", post(logout))
@@ -426,21 +550,24 @@ pub fn router(state: WebState) -> Router {
         .route("/persons/:id/enabled", post(toggle_person))
         .route("/persons/:id/reset", post(reset_exam))
         .route("/persons/:id/keys", post(add_key))
-        .route("/keys/:id/enabled", post(toggle_key))
-        .route("/keys/:id/remove", post(remove_key))
+        .route("/people/:person_id/keys/:id/enabled", post(toggle_key))
+        .route("/people/:person_id/keys/:id/remove", post(remove_key))
         .route("/persons/:id/bindings", post(add_binding))
-        .route("/bindings/:id/enabled", post(toggle_binding))
-        .route("/exam/banks", post(create_exam_bank))
-        .route("/exam/:bank_id/settings", post(update_exam_settings))
-        .route("/exam/:bank_id/questions", post(add_exam_question))
         .route(
-            "/exam/:bank_id/questions/:index/edit",
+            "/people/:person_id/bindings/:id/enabled",
+            post(toggle_binding),
+        )
+        .route("/banks/:bank_id/settings", post(update_exam_settings))
+        .route("/banks/:bank_id/questions", post(add_exam_question))
+        .route(
+            "/banks/:bank_id/questions/:index/edit",
             post(edit_exam_question),
         )
         .route(
-            "/exam/:bank_id/questions/:index/delete",
+            "/banks/:bank_id/questions/:index/delete",
             post(delete_exam_question),
         )
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .layer(middleware::map_response(security_headers))
         .with_state(state)
 }
@@ -477,6 +604,26 @@ async fn login(
             "请求验证失败",
         );
     }
+    let now = unix_time();
+    let blocked = match state.login_throttle.lock() {
+        Ok(mut throttle) => throttle.is_blocked(now),
+        Err(_) => {
+            return localized_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                language_from_headers(&headers),
+                "login service unavailable",
+                "登录服务不可用",
+            )
+        }
+    };
+    if blocked {
+        return localized_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            language_from_headers(&headers),
+            "too many failed login attempts; try again shortly",
+            "登录失败次数过多，请稍后重试",
+        );
+    }
     let hash = state.password_hash.clone();
     let password = form.password.into_bytes();
     let verified = tokio::task::spawn_blocking(move || {
@@ -488,6 +635,9 @@ async fn login(
     })
     .await
     .unwrap_or(false);
+    if let Ok(mut throttle) = state.login_throttle.lock() {
+        throttle.record(verified, now);
+    }
     if !verified {
         let language = language_from_headers(&headers);
         let mut response = render_login(
@@ -544,25 +694,63 @@ async fn people_page(State(state): State<WebState>, headers: HeaderMap) -> Respo
     response
 }
 
-async fn exam_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
-    render_exam_page(state, headers, LEGACY_BANK_ID.to_owned()).await
-}
-
-async fn exam_bank_page(
+async fn person_page(
     State(state): State<WebState>,
     headers: HeaderMap,
-    AxumPath(bank_id): AxumPath<String>,
+    AxumPath(id): AxumPath<i64>,
 ) -> Response {
-    render_exam_page(state, headers, bank_id).await
-}
-
-async fn render_exam_page(state: WebState, headers: HeaderMap, bank_id: String) -> Response {
     let Some(session) = session_from_headers(&state, &headers) else {
         return Redirect::to("/login").into_response();
     };
     let language = language_from_headers(&headers);
     let notice = flash_message(&state, &headers, language);
-    let mut response = render_exam(
+    let mut response = render_person(
+        &state,
+        &session,
+        language,
+        id,
+        notice,
+        String::new(),
+        StatusCode::OK,
+    );
+    clear_flash(&mut response);
+    response
+}
+
+async fn banks_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    let Some(session) = session_from_headers(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    let language = language_from_headers(&headers);
+    let notice = flash_message(&state, &headers, language);
+    let mut response = render_banks(
+        &state,
+        &session,
+        language,
+        notice,
+        String::new(),
+        StatusCode::OK,
+    )
+    .await;
+    clear_flash(&mut response);
+    response
+}
+
+async fn bank_page(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(bank_id): AxumPath<String>,
+) -> Response {
+    render_bank_page(state, headers, bank_id).await
+}
+
+async fn render_bank_page(state: WebState, headers: HeaderMap, bank_id: String) -> Response {
+    let Some(session) = session_from_headers(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    let language = language_from_headers(&headers);
+    let notice = flash_message(&state, &headers, language);
+    let mut response = render_bank(
         &state,
         &session,
         language,
@@ -574,6 +762,89 @@ async fn render_exam_page(state: WebState, headers: HeaderMap, bank_id: String) 
     .await;
     clear_flash(&mut response);
     response
+}
+
+async fn export_bank(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(bank_id): AxumPath<String>,
+) -> Response {
+    if session_from_headers(&state, &headers).is_none() {
+        return Redirect::to("/login").into_response();
+    }
+    if validate_bank_id(&bank_id).is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match state
+        .catalog
+        .load(&bank_id)
+        .and_then(|quiz| quiz.to_pretty_json())
+    {
+        Ok(body) => (
+            [
+                (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    &format!("attachment; filename=\"{bank_id}.json\""),
+                ),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(error) => localized_response(
+            StatusCode::NOT_FOUND,
+            language_from_headers(&headers),
+            &format!("question bank unavailable: {error}"),
+            &format!("题库不可用：{error}"),
+        ),
+    }
+}
+
+async fn tests_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    let Some(session) = session_from_headers(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    let language = language_from_headers(&headers);
+    let notice = flash_message(&state, &headers, language);
+    let mut response = render_tests(
+        &state,
+        &session,
+        language,
+        notice,
+        String::new(),
+        StatusCode::OK,
+    )
+    .await;
+    clear_flash(&mut response);
+    response
+}
+
+async fn test_page(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(test_id): AxumPath<String>,
+) -> Response {
+    let Some(session) = session_from_headers(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    let language = language_from_headers(&headers);
+    let notice = flash_message(&state, &headers, language);
+    let mut response = render_test(
+        &state,
+        &session,
+        language,
+        &test_id,
+        notice,
+        String::new(),
+        StatusCode::OK,
+    )
+    .await;
+    clear_flash(&mut response);
+    response
+}
+
+async fn legacy_exam_redirect() -> Redirect {
+    Redirect::to("/tests")
 }
 
 async fn select_language(
@@ -617,9 +888,24 @@ async fn create_person(
     headers: HeaderMap,
     Form(form): Form<CreatePersonForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "person-created", || {
-        state.db.create_person(&form.display_name).map(|_| ())
-    })
+    let Ok(_) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    match state.db.create_person(&form.display_name) {
+        Ok(id) => flash_redirect(&state, &format!("/people/{id}"), "person-created"),
+        Err(error) => {
+            let language = language_from_headers(&headers);
+            let session = session_from_headers(&state, &headers).expect("authorized session");
+            render_people(
+                &state,
+                &session,
+                language,
+                String::new(),
+                public_db_error(&error, language),
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    }
 }
 
 async fn toggle_person(
@@ -628,7 +914,7 @@ async fn toggle_person(
     AxumPath(id): AxumPath<i64>,
     Form(form): Form<ToggleForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "person-updated", || {
+    mutate_person(&state, &headers, &form.csrf, id, "person-updated", || {
         state.db.set_person_enabled(id, form.enabled)
     })
 }
@@ -639,7 +925,7 @@ async fn reset_exam(
     AxumPath(id): AxumPath<i64>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "exam-reset", || {
+    mutate_person(&state, &headers, &form.csrf, id, "exam-reset", || {
         state.db.reset_exam(id)
     })
 }
@@ -650,7 +936,7 @@ async fn add_key(
     AxumPath(id): AxumPath<i64>,
     Form(form): Form<AddKeyForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "key-added", || {
+    mutate_person(&state, &headers, &form.csrf, id, "key-added", || {
         state.db.add_key(id, &form.public_key).map(|_| ())
     })
 }
@@ -658,23 +944,55 @@ async fn add_key(
 async fn toggle_key(
     State(state): State<WebState>,
     headers: HeaderMap,
-    AxumPath(id): AxumPath<i64>,
+    AxumPath((person_id, id)): AxumPath<(i64, i64)>,
     Form(form): Form<ToggleForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "key-updated", || {
-        state.db.set_key_enabled(id, form.enabled)
-    })
+    mutate_person(
+        &state,
+        &headers,
+        &form.csrf,
+        person_id,
+        "key-updated",
+        || {
+            if !state
+                .db
+                .get_person(person_id)?
+                .keys
+                .iter()
+                .any(|key| key.id == id)
+            {
+                return Err(GateError::NotFound);
+            }
+            state.db.set_key_enabled(id, form.enabled)
+        },
+    )
 }
 
 async fn remove_key(
     State(state): State<WebState>,
     headers: HeaderMap,
-    AxumPath(id): AxumPath<i64>,
+    AxumPath((person_id, id)): AxumPath<(i64, i64)>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "key-removed", || {
-        state.db.remove_key(id)
-    })
+    mutate_person(
+        &state,
+        &headers,
+        &form.csrf,
+        person_id,
+        "key-removed",
+        || {
+            if !state
+                .db
+                .get_person(person_id)?
+                .keys
+                .iter()
+                .any(|key| key.id == id)
+            {
+                return Err(GateError::NotFound);
+            }
+            state.db.remove_key(id)
+        },
+    )
 }
 
 async fn add_binding(
@@ -683,10 +1001,7 @@ async fn add_binding(
     AxumPath(id): AxumPath<i64>,
     Form(form): Form<AddBindingForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "mapping-added", || {
-        state.catalog.load(&form.bank_id).map_err(|error| {
-            GateError::Invalid(format!("selected quiz bank is unavailable: {error}"))
-        })?;
+    mutate_person(&state, &headers, &form.csrf, id, "mapping-added", || {
         let ssh_key_id = if form.ssh_key_id.trim().is_empty() {
             None
         } else {
@@ -702,7 +1017,6 @@ async fn add_binding(
                 person_id: id,
                 ssh_key_id,
                 unix_username: form.unix_username.clone(),
-                bank_id: form.bank_id.clone(),
             })
             .map(|_| ())
     })
@@ -711,12 +1025,28 @@ async fn add_binding(
 async fn toggle_binding(
     State(state): State<WebState>,
     headers: HeaderMap,
-    AxumPath(id): AxumPath<i64>,
+    AxumPath((person_id, id)): AxumPath<(i64, i64)>,
     Form(form): Form<ToggleForm>,
 ) -> Response {
-    mutate_people(&state, &headers, &form.csrf, "mapping-updated", || {
-        state.db.set_binding_enabled(id, form.enabled)
-    })
+    mutate_person(
+        &state,
+        &headers,
+        &form.csrf,
+        person_id,
+        "mapping-updated",
+        || {
+            if !state
+                .db
+                .get_person(person_id)?
+                .bindings
+                .iter()
+                .any(|binding| binding.id == id)
+            {
+                return Err(GateError::NotFound);
+            }
+            state.db.set_binding_enabled(id, form.enabled)
+        },
+    )
 }
 
 async fn update_exam_settings(
@@ -800,55 +1130,34 @@ async fn delete_exam_question(
     .await
 }
 
-async fn create_exam_bank(
+async fn import_bank(
     State(state): State<WebState>,
     headers: HeaderMap,
-    Form(form): Form<CreateBankForm>,
+    Form(form): Form<ImportBankForm>,
 ) -> Response {
     let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
         return mutation_rejection(&state, &headers);
     };
     let language = language_from_headers(&headers);
     let bank_id = form.bank_id.trim().to_owned();
-    let question = parse_question_fields(&form.prompt, &form.choices, &form.correct_index);
-    let quiz = (|| -> Result<Quiz> {
-        Ok(Quiz {
-            title: form.title.trim().to_owned(),
-            environment: parse_environment(&form.environment)?,
-            pass_threshold_percent: form
-                .pass_threshold_percent
-                .parse()
-                .context("pass threshold must be a whole number")?,
-            max_attempts: form
-                .max_attempts
-                .parse()
-                .context("maximum attempts must be a whole number")?,
-            questions: vec![question?],
-        })
-    })();
     let catalog = state.catalog.clone();
     let lock = state.quiz_lock.clone();
-    let create_id = bank_id.clone();
-    let result = match quiz {
-        Ok(quiz) => {
-            tokio::task::spawn_blocking(move || {
-                let _guard = lock
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("quiz update lock is unavailable"))?;
-                catalog.create(&create_id, &quiz)
-            })
-            .await
-        }
-        Err(error) => Ok(Err(error)),
-    };
+    let import_id = bank_id.clone();
+    let raw = form.json.into_bytes();
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("quiz update lock is unavailable"))?;
+        catalog.import(&import_id, &raw)
+    })
+    .await;
     match result {
-        Ok(Ok(_)) => flash_redirect(&state, &format!("/exam/{bank_id}"), "bank-created"),
+        Ok(Ok(_)) => flash_redirect(&state, &format!("/banks/{bank_id}"), "bank-imported"),
         Ok(Err(error)) => {
-            render_exam(
+            render_banks(
                 &state,
                 &session,
                 language,
-                LEGACY_BANK_ID,
                 String::new(),
                 localized_error(language, &error.to_string()),
                 StatusCode::BAD_REQUEST,
@@ -858,16 +1167,160 @@ async fn create_exam_bank(
         Err(_) => localized_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             language,
-            "quiz update task failed",
-            "题库更新任务失败",
+            "quiz import task failed",
+            "题库导入任务失败",
         ),
     }
 }
 
-fn mutate_people(
+async fn create_test(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Form(form): Form<TestForm>,
+) -> Response {
+    mutate_test_definition(state, headers, form, None).await
+}
+
+async fn update_test(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(test_id): AxumPath<String>,
+    Form(form): Form<TestForm>,
+) -> Response {
+    mutate_test_definition(state, headers, form, Some(test_id)).await
+}
+
+async fn mutate_test_definition(
+    state: WebState,
+    headers: HeaderMap,
+    form: TestForm,
+    existing_id: Option<String>,
+) -> Response {
+    let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    let language = language_from_headers(&headers);
+    let input = parse_test_form(&form);
+    let result = input.and_then(|input| {
+        state.catalog.compose(
+            input.title.clone(),
+            &input.bank_ids,
+            input.pass_threshold_percent,
+            input.max_attempts,
+        )?;
+        match existing_id.as_deref() {
+            Some(id) => state
+                .db
+                .update_test(id, &input)
+                .map_err(anyhow::Error::from),
+            None => state.db.create_test(&input).map_err(anyhow::Error::from),
+        }?;
+        Ok(input.id)
+    });
+    match result {
+        Ok(test_id) => flash_redirect(
+            &state,
+            &format!("/tests/{test_id}"),
+            if existing_id.is_some() {
+                "test-updated"
+            } else {
+                "test-created"
+            },
+        ),
+        Err(error) => match existing_id {
+            Some(test_id) => {
+                render_test(
+                    &state,
+                    &session,
+                    language,
+                    &test_id,
+                    String::new(),
+                    localized_error(language, &error.to_string()),
+                    StatusCode::BAD_REQUEST,
+                )
+                .await
+            }
+            None => {
+                render_tests(
+                    &state,
+                    &session,
+                    language,
+                    String::new(),
+                    localized_error(language, &error.to_string()),
+                    StatusCode::BAD_REQUEST,
+                )
+                .await
+            }
+        },
+    }
+}
+
+async fn publish_test(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(test_id): AxumPath<String>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    let language = language_from_headers(&headers);
+    let result = (|| -> Result<PublishedTest> {
+        let test = state.db.get_test(&test_id)?;
+        let quiz = state.catalog.compose(
+            test.title,
+            &test.bank_ids,
+            test.pass_threshold_percent,
+            test.max_attempts,
+        )?;
+        Ok(state.db.publish_test(&test_id, &quiz)?)
+    })();
+    match result {
+        Ok(_) => flash_redirect(&state, &format!("/tests/{test_id}"), "test-published"),
+        Err(error) => {
+            render_test(
+                &state,
+                &session,
+                language,
+                &test_id,
+                String::new(),
+                localized_error(language, &error.to_string()),
+                StatusCode::BAD_REQUEST,
+            )
+            .await
+        }
+    }
+}
+
+fn parse_test_form(form: &TestForm) -> Result<TestDefinitionInput> {
+    let bank_ids = form
+        .bank_ids
+        .lines()
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Ok(TestDefinitionInput {
+        id: form.test_id.trim().to_owned(),
+        title: form.title.trim().to_owned(),
+        bank_ids,
+        pass_threshold_percent: form
+            .pass_threshold_percent
+            .parse()
+            .context("pass threshold must be a whole number")?,
+        max_attempts: form
+            .max_attempts
+            .parse()
+            .context("maximum attempts must be a whole number")?,
+    })
+}
+
+fn mutate_person(
     state: &WebState,
     headers: &HeaderMap,
     csrf: &str,
+    person_id: i64,
     success_code: &'static str,
     operation: impl FnOnce() -> Result<(), GateError>,
 ) -> Response {
@@ -875,11 +1328,12 @@ fn mutate_people(
         return mutation_rejection(state, headers);
     };
     match operation() {
-        Ok(()) => flash_redirect(state, "/people", success_code),
-        Err(error) => render_people(
+        Ok(()) => flash_redirect(state, &format!("/people/{person_id}"), success_code),
+        Err(error) => render_person(
             state,
             &session,
             language_from_headers(headers),
+            person_id,
             String::new(),
             public_db_error(&error, language_from_headers(headers)),
             match error {
@@ -913,9 +1367,9 @@ async fn mutate_quiz(
     .await;
 
     match result {
-        Ok(Ok(_)) => flash_redirect(&state, &format!("/exam/{bank_id}"), success_code),
+        Ok(Ok(_)) => flash_redirect(&state, &format!("/banks/{bank_id}"), success_code),
         Ok(Err(error)) => {
-            render_exam(
+            render_bank(
                 &state,
                 &session,
                 language_from_headers(&headers),
@@ -1040,11 +1494,22 @@ async fn render_overview(
                 .into_response()
         }
     };
-    let quiz = banks
-        .first()
-        .expect("catalog always includes the legacy bank")
-        .quiz
-        .clone();
+    let quiz = match state.db.published_test() {
+        Ok(Some(published)) => published.quiz,
+        Ok(None) => banks
+            .first()
+            .expect("catalog always includes the legacy bank")
+            .quiz
+            .clone(),
+        Err(_) => {
+            return localized_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                language,
+                "database error",
+                "数据库错误",
+            )
+        }
+    };
     let metrics = overview_metrics(&people);
     let template = OverviewTemplate {
         csrf: csrf_for_session(state, session),
@@ -1067,8 +1532,8 @@ fn render_people(
     error: String,
     status: StatusCode,
 ) -> Response {
-    match (state.db.list_people(), state.catalog.discover()) {
-        (Ok(people), Ok(banks)) => {
+    match state.db.list_people() {
+        Ok(people) => {
             let template = PeopleTemplate {
                 csrf: csrf_for_session(state, session),
                 active_page: "people",
@@ -1078,19 +1543,80 @@ fn render_people(
                     .into_iter()
                     .map(|item| person_admin_view(item, language))
                     .collect(),
-                banks: bank_options(&banks, ""),
                 labels: labels(language),
                 current_path: "/people",
             };
             response_with_status(render_template(&template), status)
         }
-        (Err(_), _) => localized_response(
+        Err(_) => localized_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             language,
             "database error",
             "数据库错误",
         ),
-        (_, Err(error)) => localized_response(
+    }
+}
+
+fn render_person(
+    state: &WebState,
+    session: &Session,
+    language: WebLanguage,
+    person_id: i64,
+    notice: String,
+    error: String,
+    status: StatusCode,
+) -> Response {
+    match state.db.get_person(person_id) {
+        Ok(item) => {
+            let template = PersonTemplate {
+                csrf: csrf_for_session(state, session),
+                active_page: "people",
+                notice,
+                error,
+                item: person_admin_view(item, language),
+                labels: labels(language),
+                current_path: format!("/people/{person_id}"),
+            };
+            response_with_status(render_template(&template), status)
+        }
+        Err(GateError::NotFound) => localized_response(
+            StatusCode::NOT_FOUND,
+            language,
+            "person not found",
+            "未找到人员",
+        ),
+        Err(_) => localized_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            language,
+            "database error",
+            "数据库错误",
+        ),
+    }
+}
+
+async fn render_banks(
+    state: &WebState,
+    session: &Session,
+    language: WebLanguage,
+    notice: String,
+    error: String,
+    status: StatusCode,
+) -> Response {
+    match load_banks(state.catalog.clone()).await {
+        Ok(banks) => {
+            let template = BanksTemplate {
+                csrf: csrf_for_session(state, session),
+                active_page: "banks",
+                notice,
+                error,
+                banks: bank_options(&banks),
+                catalog_enabled: state.catalog.catalog_directory().is_some(),
+                labels: labels(language),
+                current_path: "/banks",
+            };
+            response_with_status(render_template(&template), status)
+        }
+        Err(error) => localized_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             language,
             &format!("quiz catalog error: {error}"),
@@ -1099,7 +1625,7 @@ fn render_people(
     }
 }
 
-async fn render_exam(
+async fn render_bank(
     state: &WebState,
     session: &Session,
     language: WebLanguage,
@@ -1133,20 +1659,18 @@ async fn render_exam(
                     answer_options: answer_options(question.choices.len()),
                 })
                 .collect();
-            let template = ExamTemplate {
+            let template = BankTemplate {
                 csrf: csrf_for_session(state, session),
-                active_page: "exam",
+                active_page: "banks",
                 notice,
                 error,
                 quiz,
                 bank_id: bank_id.to_owned(),
-                banks: bank_options(&banks, bank_id),
-                catalog_enabled: state.catalog.catalog_directory().is_some(),
                 environment,
                 questions,
                 answer_options: answer_options(20),
                 labels: labels(language),
-                current_path: format!("/exam/{bank_id}"),
+                current_path: format!("/banks/{bank_id}"),
             };
             response_with_status(render_template(&template), status)
         }
@@ -1156,6 +1680,133 @@ async fn render_exam(
         )
             .into_response(),
     }
+}
+
+async fn render_tests(
+    state: &WebState,
+    session: &Session,
+    language: WebLanguage,
+    notice: String,
+    error: String,
+    status: StatusCode,
+) -> Response {
+    let banks = match load_banks(state.catalog.clone()).await {
+        Ok(banks) => banks,
+        Err(error) => {
+            return localized_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                language,
+                &format!("quiz catalog error: {error}"),
+                &format!("题库目录错误：{error}"),
+            )
+        }
+    };
+    match test_admin_views(state, &banks) {
+        Ok(tests) => {
+            let template = TestsTemplate {
+                csrf: csrf_for_session(state, session),
+                active_page: "tests",
+                notice,
+                error,
+                tests,
+                banks: bank_options(&banks),
+                labels: labels(language),
+                current_path: "/tests",
+            };
+            response_with_status(render_template(&template), status)
+        }
+        Err(_) => localized_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            language,
+            "database error",
+            "数据库错误",
+        ),
+    }
+}
+
+async fn render_test(
+    state: &WebState,
+    session: &Session,
+    language: WebLanguage,
+    test_id: &str,
+    notice: String,
+    error: String,
+    status: StatusCode,
+) -> Response {
+    let banks = match load_banks(state.catalog.clone()).await {
+        Ok(banks) => banks,
+        Err(error) => {
+            return localized_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                language,
+                &format!("quiz catalog error: {error}"),
+                &format!("题库目录错误：{error}"),
+            )
+        }
+    };
+    match test_admin_views(state, &banks) {
+        Ok(tests) => {
+            let Some(test) = tests.into_iter().find(|test| test.test.id == test_id) else {
+                return localized_response(
+                    StatusCode::NOT_FOUND,
+                    language,
+                    "test not found",
+                    "未找到测试",
+                );
+            };
+            let bank_ids_text = test.test.bank_ids.join("\n");
+            let template = TestTemplate {
+                csrf: csrf_for_session(state, session),
+                active_page: "tests",
+                notice,
+                error,
+                test,
+                bank_ids_text,
+                labels: labels(language),
+                current_path: format!("/tests/{test_id}"),
+            };
+            response_with_status(render_template(&template), status)
+        }
+        Err(_) => localized_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            language,
+            "database error",
+            "数据库错误",
+        ),
+    }
+}
+
+fn test_admin_views(state: &WebState, banks: &[QuizBank]) -> Result<Vec<TestAdminView>, GateError> {
+    let active = state.db.published_test()?;
+    state
+        .db
+        .list_tests()?
+        .into_iter()
+        .map(|test| {
+            let question_count = test
+                .bank_ids
+                .iter()
+                .filter_map(|id| banks.iter().find(|bank| &bank.id == id))
+                .map(|bank| bank.quiz.questions.len())
+                .sum();
+            let bank_names = test.bank_ids.join(", ");
+            let published = active
+                .as_ref()
+                .is_some_and(|publication| publication.test_id == test.id);
+            let revision = active
+                .as_ref()
+                .filter(|publication| publication.test_id == test.id)
+                .map(|publication| publication.revision.clone())
+                .unwrap_or_default();
+            Ok(TestAdminView {
+                test,
+                bank_names,
+                question_count,
+                published,
+                revision,
+            })
+        })
+        .collect()
 }
 
 async fn load_banks(catalog: Arc<QuizCatalog>) -> Result<Vec<QuizBank>> {
@@ -1215,7 +1866,6 @@ fn person_admin_view(item: PersonView, language: WebLanguage) -> PersonAdminView
                 id: binding.id,
                 unix_username: binding.unix_username,
                 scope,
-                bank_id: binding.bank_id,
                 enabled: binding.enabled,
             }
         })
@@ -1228,7 +1878,7 @@ fn person_admin_view(item: PersonView, language: WebLanguage) -> PersonAdminView
     }
 }
 
-fn bank_options(banks: &[QuizBank], selected: &str) -> Vec<BankOption> {
+fn bank_options(banks: &[QuizBank]) -> Vec<BankOption> {
     banks
         .iter()
         .map(|bank| BankOption {
@@ -1237,7 +1887,6 @@ fn bank_options(banks: &[QuizBank], selected: &str) -> Vec<BankOption> {
             environment: bank.quiz.environment.as_str(),
             question_count: bank.quiz.questions.len(),
             legacy: bank.legacy,
-            selected: bank.id == selected,
         })
         .collect()
 }
@@ -1383,13 +2032,23 @@ fn language_from_headers(headers: &HeaderMap) -> WebLanguage {
 
 fn safe_return_path(value: Option<&str>) -> String {
     let value = value.unwrap_or("/");
-    if matches!(value, "/" | "/people" | "/exam" | "/login") {
+    if matches!(value, "/" | "/people" | "/banks" | "/tests" | "/login") {
         return value.to_owned();
     }
-    if let Some(bank_id) = value.strip_prefix("/exam/") {
-        if !bank_id.contains('/') && validate_bank_id(bank_id).is_ok() {
+    if let Some(person_id) = value.strip_prefix("/people/") {
+        if !person_id.contains('/') && person_id.parse::<i64>().is_ok() {
             return value.to_owned();
         }
+    }
+    for prefix in ["/banks/", "/tests/"] {
+        if let Some(id) = value.strip_prefix(prefix) {
+            if !id.contains('/') && validate_bank_id(id).is_ok() {
+                return value.to_owned();
+            }
+        }
+    }
+    if value == "/exam" {
+        return value.to_owned();
     }
     "/".to_owned()
 }
@@ -1445,10 +2104,17 @@ fn flash_message(state: &WebState, headers: &HeaderMap, language: WebLanguage) -
             language.text("Access mapping status updated.", "访问映射状态已更新。")
         }
         "bank-created" => language.text("Quiz bank created.", "题库已创建。"),
+        "bank-imported" => language.text("Question bank imported.", "题库已导入。"),
         "settings-updated" => language.text("Exam settings saved.", "考试设置已保存。"),
         "question-added" => language.text("Question added.", "问题已添加。"),
         "question-updated" => language.text("Question saved.", "问题已保存。"),
         "question-deleted" => language.text("Question deleted.", "问题已删除。"),
+        "test-created" => language.text("Test created.", "测试已创建。"),
+        "test-updated" => language.text("Test saved.", "测试已保存。"),
+        "test-published" => language.text(
+            "Test published. Users must pass this revision before normal SSH access.",
+            "测试已发布；用户必须通过此版本后才能正常使用 SSH。",
+        ),
         _ => String::new(),
     }
 }
@@ -1524,6 +2190,21 @@ mod tests {
                 correct_index: 0,
             }],
         }
+    }
+
+    #[test]
+    fn login_throttle_blocks_bursts_and_resets_after_success() {
+        let mut throttle = LoginThrottle::default();
+        for _ in 0..LOGIN_FAILURE_LIMIT {
+            assert!(!throttle.is_blocked(100));
+            throttle.record(false, 100);
+        }
+        assert!(throttle.is_blocked(100));
+        assert!(!throttle.is_blocked(100 + LOGIN_BLOCK_SECONDS));
+        throttle.record(false, 200);
+        throttle.record(true, 200);
+        assert_eq!(throttle.failures, 0);
+        assert!(!throttle.is_blocked(200));
     }
 
     fn harness() -> Harness {
@@ -1642,11 +2323,11 @@ mod tests {
         let harness = harness();
         for (path, body) in [
             (
-                "/exam/legacy/settings",
+                "/banks/legacy/settings",
                 "csrf=bad&title=Safety&environment=general&pass_threshold_percent=80&max_attempts=3",
             ),
             (
-                "/exam/legacy/questions",
+                "/banks/legacy/questions",
                 "csrf=bad&prompt=Safe%3F&choices=Yes%0ANo&correct_index=0",
             ),
         ] {
@@ -1656,11 +2337,11 @@ mod tests {
         let (session, _) = login(&harness.app).await;
         for (path, body) in [
             (
-                "/exam/legacy/settings",
+                "/banks/legacy/settings",
                 "csrf=bad&title=Safety&environment=general&pass_threshold_percent=80&max_attempts=3",
             ),
             (
-                "/exam/legacy/questions",
+                "/banks/legacy/questions",
                 "csrf=bad&prompt=Safe%3F&choices=Yes%0ANo&correct_index=0",
             ),
         ] {
@@ -1703,7 +2384,7 @@ mod tests {
             &harness.app,
             &format!("/persons/{person_id}/bindings"),
             &session,
-            &format!("csrf={csrf}&unix_username=missing_exam_user&ssh_key_id=&bank_id=legacy"),
+            &format!("csrf={csrf}&unix_username=Invalid%21&ssh_key_id="),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1718,11 +2399,14 @@ mod tests {
             .db
             .add_key(person_id, "ssh-ed25519 aGVsbG8= device")
             .unwrap();
+        let published = harness.state.db.published_test().unwrap().unwrap();
         harness
             .state
             .db
             .record_attempt(&AttemptInput {
                 person_id,
+                test_id: &published.test_id,
+                revision: &published.revision,
                 score: 1,
                 total: 1,
                 passed: true,
@@ -1743,7 +2427,7 @@ mod tests {
             ),
             (
                 format!("/persons/{person_id}/bindings"),
-                format!("csrf={csrf}&unix_username=root&ssh_key_id=&bank_id=legacy"),
+                format!("csrf={csrf}&unix_username=root&ssh_key_id="),
             ),
         ] {
             assert_eq!(
@@ -1756,18 +2440,21 @@ mod tests {
         let binding_id = harness.state.db.list_people().unwrap()[0].bindings[0].id;
         for (path, body) in [
             (
-                format!("/bindings/{binding_id}/enabled"),
+                format!("/people/{person_id}/bindings/{binding_id}/enabled"),
                 format!("csrf={csrf}&enabled=false"),
             ),
             (
-                format!("/keys/{}/enabled", key.id),
+                format!("/people/{person_id}/keys/{}/enabled", key.id),
                 format!("csrf={csrf}&enabled=false"),
             ),
             (
                 format!("/persons/{person_id}/reset"),
                 format!("csrf={csrf}"),
             ),
-            (format!("/keys/{}/remove", key.id), format!("csrf={csrf}")),
+            (
+                format!("/people/{person_id}/keys/{}/remove", key.id),
+                format!("csrf={csrf}"),
+            ),
         ] {
             assert_eq!(
                 form_post(&harness.app, &path, &session, &body)
@@ -1788,7 +2475,7 @@ mod tests {
         let (session, csrf) = login(&harness.app).await;
         let response = form_post(
             &harness.app,
-            "/exam/legacy/settings",
+            "/banks/legacy/settings",
             &session,
             &format!("csrf={csrf}&title=Updated+Exam&environment=host&pass_threshold_percent=90&max_attempts=4"),
         )
@@ -1802,7 +2489,7 @@ mod tests {
 
         let response = form_post(
             &harness.app,
-            "/exam/legacy/questions",
+            "/banks/legacy/questions",
             &session,
             &format!("csrf={csrf}&prompt=Added%3F&choices=Wrong%0ARight&correct_index=1"),
         )
@@ -1810,7 +2497,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let response = form_post(
             &harness.app,
-            "/exam/legacy/questions/1/edit",
+            "/banks/legacy/questions/1/edit",
             &session,
             &format!("csrf={csrf}&prompt=Edited%3F&choices=Right%0AWrong&correct_index=0"),
         )
@@ -1822,7 +2509,7 @@ mod tests {
 
         let response = form_post(
             &harness.app,
-            "/exam/legacy/questions/0/delete",
+            "/banks/legacy/questions/0/delete",
             &session,
             &format!("csrf={csrf}"),
         )
@@ -1830,7 +2517,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let response = form_post(
             &harness.app,
-            "/exam/legacy/questions/0/delete",
+            "/banks/legacy/questions/0/delete",
             &session,
             &format!("csrf={csrf}"),
         )
@@ -1855,7 +2542,7 @@ mod tests {
         let (session, csrf) = login(&harness.app).await;
         let response = form_post(
             &harness.app,
-            "/exam/legacy/settings",
+            "/banks/legacy/settings",
             &session,
             &format!("csrf={csrf}&title=Safety&environment=general&pass_threshold_percent=0&max_attempts=3"),
         )
@@ -1865,28 +2552,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_catalog_creates_selects_and_mutates_a_bank() {
+    async fn web_imports_views_and_mutates_a_bank() {
         let harness = harness();
         let (session, csrf) = login(&harness.app).await;
         let response = form_post(
             &harness.app,
-            "/exam/banks",
+            "/banks",
             &session,
             &format!(
-                "csrf={csrf}&bank_id=host-ssh&title=Host+SSH&environment=host&pass_threshold_percent=80&max_attempts=3&prompt=Ready%3F&choices=Yes%0ANo&correct_index=0"
+                "csrf={csrf}&bank_id=host-ssh&json=%7B%22title%22%3A%22Host+SSH%22%2C%22environment%22%3A%22host%22%2C%22questions%22%3A%5B%7B%22prompt%22%3A%22Ready%3F%22%2C%22choices%22%3A%5B%22Yes%22%2C%22No%22%5D%2C%22correct_index%22%3A0%7D%5D%7D"
             ),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(response.headers()[header::LOCATION], "/exam/host-ssh");
+        assert_eq!(response.headers()[header::LOCATION], "/banks/host-ssh");
         assert_eq!(
             harness.state.catalog.load("host-ssh").unwrap().environment,
             BankEnvironment::Host
         );
+        let response = harness
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/banks/host-ssh/export")
+                    .header(header::COOKIE, &session)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/json; charset=utf-8"
+        );
 
         let response = form_post(
             &harness.app,
-            "/exam/host-ssh/settings",
+            "/banks/host-ssh/settings",
             &session,
             &format!("csrf={csrf}&title=Host+Access&environment=general&pass_threshold_percent=90&max_attempts=2"),
         )
@@ -1894,7 +2597,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let response = form_post(
             &harness.app,
-            "/exam/host-ssh/questions",
+            "/banks/host-ssh/questions",
             &session,
             &format!("csrf={csrf}&prompt=Second%3F&choices=One%0ATwo&correct_index=1"),
         )
@@ -1902,7 +2605,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let response = form_post(
             &harness.app,
-            "/exam/host-ssh/questions/1/edit",
+            "/banks/host-ssh/questions/1/edit",
             &session,
             &format!("csrf={csrf}&prompt=Edited%3F&choices=Right%0AWrong&correct_index=0"),
         )
@@ -1910,7 +2613,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let response = form_post(
             &harness.app,
-            "/exam/host-ssh/questions/0/delete",
+            "/banks/host-ssh/questions/0/delete",
             &session,
             &format!("csrf={csrf}"),
         )
@@ -1918,7 +2621,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let response = form_post(
             &harness.app,
-            "/exam/host-ssh/questions/0/delete",
+            "/banks/host-ssh/questions/0/delete",
             &session,
             &format!("csrf={csrf}"),
         )
@@ -1930,7 +2633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn access_mapping_uses_selected_catalog_bank() {
+    async fn access_mapping_is_independent_from_question_banks() {
         let harness = harness();
         harness
             .state
@@ -1943,14 +2646,45 @@ mod tests {
             &harness.app,
             &format!("/persons/{person_id}/bindings"),
             &session,
-            &format!("csrf={csrf}&unix_username=root&ssh_key_id=&bank_id=host-ssh"),
+            &format!("csrf={csrf}&unix_username=root&ssh_key_id="),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            harness.state.db.list_people().unwrap()[0].bindings[0].bank_id,
-            "host-ssh"
+            harness.state.db.list_people().unwrap()[0].bindings[0].unix_username,
+            "root"
         );
+    }
+
+    #[tokio::test]
+    async fn web_composes_and_publishes_multiple_banks() {
+        let harness = harness();
+        harness
+            .state
+            .catalog
+            .create("host-ssh", &sample_quiz())
+            .unwrap();
+        let (session, csrf) = login(&harness.app).await;
+        let response = form_post(
+            &harness.app,
+            "/tests",
+            &session,
+            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding&bank_ids=legacy%0Ahost-ssh&pass_threshold_percent=80&max_attempts=3"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/tests/onboarding");
+        let response = form_post(
+            &harness.app,
+            "/tests/onboarding/publish",
+            &session,
+            &format!("csrf={csrf}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let published = harness.state.db.published_test().unwrap().unwrap();
+        assert_eq!(published.test_id, "onboarding");
+        assert_eq!(published.quiz.questions.len(), 2);
     }
 
     #[tokio::test]
@@ -1965,7 +2699,7 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(response.headers()[header::LOCATION], "/people");
+        assert_eq!(response.headers()[header::LOCATION], "/people/1");
         let flash = cookie_pair(response.headers(), FLASH_COOKIE);
         assert!(flash.contains('.'));
 
@@ -1973,7 +2707,7 @@ mod tests {
             .app
             .clone()
             .oneshot(
-                Request::get("/people")
+                Request::get("/people/1")
                     .header(header::COOKIE, format!("{session}; {flash}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),

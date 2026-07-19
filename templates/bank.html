@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ quiz.title }} - SSH Exam Gate{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="/banks">{{ labels.question_banks }}</a><span>/</span><span>{{ quiz.title }}</span></div>
+<div class="page-head"><div><h1>{{ quiz.title }}</h1><p><code>{{ bank_id }}</code> | {{ questions.len() }} {{ labels.questions }}</p></div><a class="text-action" href="/banks/{{ bank_id }}/export">{{ labels.export_json }}</a></div>
+{% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="band" aria-labelledby="settings-heading">
+  <h2 id="settings-heading">{{ labels.settings }}</h2>
+  <form class="form-grid" method="post" action="/banks/{{ bank_id }}/settings" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="wide"><label for="exam-title">{{ labels.title }}</label><input id="exam-title" name="title" maxlength="200" value="{{ quiz.title }}" required></div>
+    <div><label for="environment">{{ labels.environment }}</label><select id="environment" name="environment"><option value="general"{% if environment == "general" %} selected{% endif %}>general</option><option value="host"{% if environment == "host" %} selected{% endif %}>host</option><option value="docker"{% if environment == "docker" %} selected{% endif %}>docker</option><option value="network"{% if environment == "network" %} selected{% endif %}>network</option></select></div>
+    <input type="hidden" name="pass_threshold_percent" value="{{ quiz.pass_threshold_percent }}"><input type="hidden" name="max_attempts" value="{{ quiz.max_attempts }}">
+    <div style="align-self:end"><button class="primary" type="submit">{{ labels.save_settings }}</button></div>
+  </form>
+</section>
+
+<section class="band" aria-labelledby="questions-heading">
+  <div class="section-head"><h2 id="questions-heading">{{ labels.questions }}</h2><span class="muted">{{ questions.len() }} {{ labels.total }}</span></div>
+  {% for question in questions %}<article class="question">
+    <div class="question-head"><h3>{{ labels.question }} {{ question.number }}</h3><span class="muted">{{ labels.answer }} {{ question.correct_index + 1 }}</span></div>
+    <form class="form-grid" method="post" action="/banks/{{ bank_id }}/questions/{{ question.index }}/edit"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="wide"><label for="prompt-{{ question.index }}">{{ labels.prompt }}</label><textarea id="prompt-{{ question.index }}" name="prompt" maxlength="2000" required>{{ question.prompt }}</textarea></div><div class="wide"><label for="choices-{{ question.index }}">{{ labels.choices }}</label><textarea id="choices-{{ question.index }}" name="choices" maxlength="10020" required>{{ question.choices_text }}</textarea><p class="help">{{ labels.choices_help }}</p></div><div><label for="answer-{{ question.index }}">{{ labels.correct_answer }}</label><select id="answer-{{ question.index }}" name="correct_index">{% for option in question.answer_options %}<option value="{{ option.index }}"{% if option.index == question.correct_index %} selected{% endif %}>{{ labels.choice }} {{ option.number }}</option>{% endfor %}</select></div><div style="align-self:end"><button class="primary" type="submit">{{ labels.save_question }}</button></div></form>
+    <div class="question-actions"><span class="help">{{ labels.delete_question_help }}</span><form method="post" action="/banks/{{ bank_id }}/questions/{{ question.index }}/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit"{% if questions.len() == 1 %} disabled title="{{ labels.keep_one_question }}"{% endif %}>{{ labels.delete_question }}</button></form></div>
+  </article>{% endfor %}
+</section>
+
+<section class="band" aria-labelledby="add-question-heading"><h2 id="add-question-heading">{{ labels.add_question }}</h2><form class="form-grid" method="post" action="/banks/{{ bank_id }}/questions" style="margin-top:12px"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="wide"><label for="new-prompt">{{ labels.prompt }}</label><textarea id="new-prompt" name="prompt" maxlength="2000" required></textarea></div><div class="wide"><label for="new-choices">{{ labels.choices }}</label><textarea id="new-choices" name="choices" maxlength="10020" required></textarea><p class="help">{{ labels.choices_help }}</p></div><div><label for="new-answer">{{ labels.correct_answer }}</label><select id="new-answer" name="correct_index">{% for option in answer_options %}<option value="{{ option.index }}">{{ labels.choice }} {{ option.number }}</option>{% endfor %}</select></div><div style="align-self:end"><button class="primary" type="submit">{{ labels.add_question }}</button></div></form></section>
+{% endblock %}

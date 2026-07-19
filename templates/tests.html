@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ labels.exam }} - SSH Exam Gate{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ labels.exam }}</h1><p>{{ labels.exam_help }}</p></div></div>
+{% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+<section class="band" aria-labelledby="tests-heading">
+  <div class="section-head"><h2 id="tests-heading">{{ labels.saved_tests }}</h2><span class="muted">{{ tests.len() }} {{ labels.total }}</span></div>
+  {% if tests.len() == 0 %}<div class="empty">{{ labels.no_published_test }}</div>{% else %}
+  <div class="table-wrap"><table><thead><tr><th>{{ labels.test_id }}</th><th>{{ labels.title }}</th><th>{{ labels.banks }}</th><th>{{ labels.combined_questions }}</th><th>{{ labels.pass_threshold }}</th><th>{{ labels.status }}</th><th>{{ labels.action }}</th></tr></thead><tbody>
+  {% for item in tests %}<tr><td><code>{{ item.test.id }}</code></td><td>{{ item.test.title }}</td><td>{{ item.test.bank_ids.len() }}<br><span class="muted">{{ item.bank_names }}</span></td><td>{{ item.question_count }}</td><td>{{ item.test.pass_threshold_percent }}%</td><td>{% if item.published %}<span class="status good">{{ labels.published }}</span>{% else %}<span class="status pending">{{ labels.draft }}</span>{% endif %}</td><td><a class="text-action" href="/tests/{{ item.test.id }}">{{ labels.view_details }}</a></td></tr>{% endfor %}
+  </tbody></table></div>{% endif %}
+</section>
+
+<section class="band" aria-labelledby="create-test-heading">
+  <h2 id="create-test-heading">{{ labels.create_test }}</h2>
+  <div class="split-layout">
+    <form class="form-grid" method="post" action="/tests"><input type="hidden" name="csrf" value="{{ csrf }}"><div><label for="test-id">{{ labels.test_id }}</label><input id="test-id" name="test_id" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" required></div><div><label for="test-title">{{ labels.title }}</label><input id="test-title" name="title" maxlength="200" required></div><div class="wide"><label for="bank-ids">{{ labels.bank_selection }}</label><textarea class="code-input" id="bank-ids" name="bank_ids" required></textarea><p class="help">{{ labels.bank_selection_help }}</p></div><div><label for="threshold">{{ labels.pass_threshold }} (%)</label><input id="threshold" name="pass_threshold_percent" type="number" min="1" max="100" value="80" required></div><div><label for="attempts">{{ labels.maximum_attempts }}</label><input id="attempts" name="max_attempts" type="number" min="1" max="100" value="3" required></div><div><button class="primary" type="submit">{{ labels.create_test }}</button></div></form>
+    <aside class="reference-panel"><h3>{{ labels.question_banks }}</h3><div class="reference-list">{% for bank in banks %}<div><code>{{ bank.id }}</code><span>{{ bank.title }} · {{ bank.question_count }} {{ labels.questions }}</span></div>{% endfor %}</div></aside>
+  </div>
+</section>
+{% endblock %}

@@ -59,14 +59,13 @@ fn render_record(
     let registered_key = format!("{} {} ssh-exam-gate", record.key_type, record.key_base64);
     if !record.passed {
         let command = format!(
-            "{} -n -u {} -- {} --config {} --username {} --fingerprint {} --bank {} --language {}",
+            "{} -n -u {} -- {} --config {} --username {} --fingerprint {} --language {}",
             shell_word(&config.sudo_path)?,
             shell_value(&config.tui_run_as)?,
             shell_word(&config.tui_path)?,
             shell_word(config_path)?,
             shell_value(&record.unix_username)?,
             shell_value(&record.fingerprint)?,
-            shell_value(&record.bank_id)?,
             shell_value(&config.tui_language)?,
         );
         return Ok(PolicyDecision::Pending(format!(
@@ -115,7 +114,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::db::{AttemptInput, BindingInput, KeyRecord};
+    use crate::{
+        db::{AttemptInput, BindingInput, KeyRecord},
+        quiz::{Question, Quiz},
+    };
 
     const KEY: &str = "ssh-ed25519 aGVsbG8= ignored-comment";
 
@@ -140,13 +142,24 @@ mod tests {
         let config = config(&directory);
         let db = Db::new(&config.database_path, Duration::from_secs(1));
         db.initialize().unwrap();
+        db.ensure_legacy_test(&Quiz {
+            title: "Safety".to_owned(),
+            environment: Default::default(),
+            pass_threshold_percent: 80,
+            max_attempts: 3,
+            questions: vec![Question {
+                prompt: "Ready?".to_owned(),
+                choices: vec!["Yes".to_owned(), "No".to_owned()],
+                correct_index: 0,
+            }],
+        })
+        .unwrap();
         let person = db.create_person("Alice").unwrap();
         let key = db.add_key(person, KEY).unwrap();
         db.add_binding(&BindingInput {
             person_id: person,
             ssh_key_id: None,
             unix_username: "root".to_owned(),
-            bank_id: "host-ssh".to_owned(),
         })
         .unwrap();
         (directory, db, config, key, person)
@@ -209,7 +222,7 @@ mod tests {
         assert_eq!(
             decision,
             PolicyDecision::Pending(format!(
-                "restrict,pty,command=\"'/usr/bin/sudo' -n -u 'ssh-exam-tui' -- '/usr/local/libexec/ssh-exam-tui' --config '/etc/ssh-exam/config.json' --username 'root' --fingerprint '{}' --bank 'host-ssh' --language 'bilingual'\" ssh-ed25519 aGVsbG8= ssh-exam-gate",
+                "restrict,pty,command=\"'/usr/bin/sudo' -n -u 'ssh-exam-tui' -- '/usr/local/libexec/ssh-exam-tui' --config '/etc/ssh-exam/config.json' --username 'root' --fingerprint '{}' --language 'bilingual'\" ssh-ed25519 aGVsbG8= ssh-exam-gate",
                 key.fingerprint
             ))
         );
@@ -253,8 +266,11 @@ mod tests {
     }
 
     fn pass(db: &Db, person_id: i64) {
+        let published = db.published_test().unwrap().unwrap();
         db.record_attempt(&AttemptInput {
             person_id,
+            test_id: &published.test_id,
+            revision: &published.revision,
             score: 1,
             total: 1,
             passed: true,

@@ -18,7 +18,7 @@
 </section>
 
 <section class="band" aria-labelledby="exam-summary-heading">
-  <div class="section-head"><h2 id="exam-summary-heading">{{ labels.current_exam }}</h2><a href="/exam">{{ labels.manage_exam }}</a></div>
+  <div class="section-head"><h2 id="exam-summary-heading">{{ labels.current_exam }}</h2><a class="text-action" href="/tests">{{ labels.manage_exam }}</a></div>
   <div class="summary">
     <div><span>{{ labels.title }}</span><strong>{{ quiz.title }}</strong></div>
     <div><span>{{ labels.environment }}</span><strong>{{ quiz.environment.as_str() }}</strong></div>
@@ -30,7 +30,7 @@
 </section>
 
 <section class="band" aria-labelledby="access-heading">
-  <div class="section-head"><h2 id="access-heading">{{ labels.access_model }}</h2><a href="/people">{{ labels.manage_people }}</a></div>
+  <div class="section-head"><h2 id="access-heading">{{ labels.access_model }}</h2><a class="text-action" href="/people">{{ labels.manage_people }}</a></div>
   <p class="help">{{ labels.access_help }}</p>
 </section>
 {% endblock %}

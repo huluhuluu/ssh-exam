@@ -8,7 +8,7 @@ use std::{
 use ssh_exam_gate::{
     config::AppConfig,
     db::{BindingInput, Db},
-    quiz::{BankEnvironment, Question, Quiz, QuizCatalog, LEGACY_BANK_ID},
+    quiz::{BankEnvironment, Question, Quiz},
 };
 use tempfile::TempDir;
 
@@ -22,9 +22,9 @@ fn test_config(directory: &TempDir) -> (std::path::PathBuf, AppConfig) {
         database_path: directory.path().join("gate.db"),
         quiz_path: directory.path().join("quiz.json"),
         quiz_directory: None,
-        tui_path: "/usr/local/libexec/ssh-exam-tui".into(),
+        tui_path: directory.path().join("ssh-exam-tui"),
         tui_run_as: "ssh-exam-tui".to_owned(),
-        sudo_path: "/usr/bin/sudo".into(),
+        sudo_path: directory.path().join("sudo"),
         tui_language: "bilingual".to_owned(),
         legacy_proxy_refuse_command: None,
         admin_bind: "127.0.0.1:8787".parse().unwrap(),
@@ -108,8 +108,6 @@ fn tui_rejects_sudo_user_mismatch_before_database_access() {
             "root",
             "--fingerprint",
             "SHA256:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ",
-            "--bank",
-            "legacy",
             "--language",
             "zh",
         ])
@@ -124,28 +122,9 @@ fn tui_rejects_sudo_user_mismatch_before_database_access() {
 }
 
 #[test]
-fn tui_rejects_bank_that_does_not_match_the_mapping() {
+fn tui_rejects_connection_when_no_test_is_published() {
     let directory = TempDir::new().unwrap();
-    let (config_path, mut config) = test_config(&directory);
-    let banks_path = directory.path().join("banks");
-    fs::create_dir(&banks_path).unwrap();
-    config.quiz_directory = Some(banks_path.clone());
-    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
-    let quiz = Quiz {
-        title: "Test bank".to_owned(),
-        environment: BankEnvironment::General,
-        pass_threshold_percent: 80,
-        max_attempts: 3,
-        questions: vec![Question {
-            prompt: "Ready?".to_owned(),
-            choices: vec!["Yes".to_owned(), "No".to_owned()],
-            correct_index: 0,
-        }],
-    };
-    quiz.save_atomic(&config.quiz_path).unwrap();
-    QuizCatalog::new(&config.quiz_path, Some(banks_path))
-        .create("host-ssh", &quiz)
-        .unwrap();
+    let (config_path, config) = test_config(&directory);
     let db = Db::new(&config.database_path, Duration::from_secs(1));
     db.initialize().unwrap();
     let person = db.create_person("Bank CLI Test").unwrap();
@@ -156,7 +135,6 @@ fn tui_rejects_bank_that_does_not_match_the_mapping() {
         person_id: person,
         ssh_key_id: None,
         unix_username: "root".to_owned(),
-        bank_id: LEGACY_BANK_ID.to_owned(),
     })
     .unwrap();
 
@@ -169,8 +147,6 @@ fn tui_rejects_bank_that_does_not_match_the_mapping() {
             "root",
             "--fingerprint",
             &key.fingerprint,
-            "--bank",
-            "host-ssh",
             "--language",
             "en",
         ])
@@ -179,7 +155,7 @@ fn tui_rejects_bank_that_does_not_match_the_mapping() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "ssh-exam-tui: session bank validation failed\n"
+        "ssh-exam-tui: session identity validation failed\n"
     );
 }
 
@@ -204,10 +180,116 @@ fn admin_hashes_stdin_password_and_migrates_database() {
 
     let directory = TempDir::new().unwrap();
     let (config_path, config) = test_config(&directory);
+    Quiz {
+        title: "Safety".to_owned(),
+        environment: BankEnvironment::General,
+        pass_threshold_percent: 80,
+        max_attempts: 3,
+        questions: vec![Question {
+            prompt: "Ready?".to_owned(),
+            choices: vec!["Yes".to_owned(), "No".to_owned()],
+            correct_index: 0,
+        }],
+    }
+    .save_atomic(&config.quiz_path)
+    .unwrap();
     let output = Command::new(ADMIN)
         .args(["migrate", "--config", config_path.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(output.status.success());
     assert!(config.database_path.exists());
+}
+
+#[test]
+fn admin_initializes_rotates_imports_composes_and_publishes() {
+    let directory = TempDir::new().unwrap();
+    let (config_path, mut config) = test_config(&directory);
+    let banks = directory.path().join("banks");
+    fs::create_dir(&banks).unwrap();
+    config.quiz_directory = Some(banks);
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let quiz = Quiz {
+        title: "Safety".to_owned(),
+        environment: BankEnvironment::General,
+        pass_threshold_percent: 80,
+        max_attempts: 3,
+        questions: vec![Question {
+            prompt: "Ready?".to_owned(),
+            choices: vec!["Yes".to_owned(), "No".to_owned()],
+            correct_index: 0,
+        }],
+    };
+    quiz.save_atomic(&config.quiz_path).unwrap();
+
+    for (subcommand, password) in [
+        ("init", "first-admin-password\n"),
+        ("set-admin-password", "second-admin-password\n"),
+    ] {
+        let mut child = Command::new(ADMIN)
+            .args([subcommand, "--config", config_path.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(password.as_bytes())
+            .unwrap();
+        assert!(child.wait_with_output().unwrap().status.success());
+    }
+    assert!(config.admin_auth_path.exists());
+
+    let imported = directory.path().join("docker-ssh.json");
+    quiz.save_atomic(&imported).unwrap();
+    for arguments in [
+        vec![
+            "import-bank",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--id",
+            "docker-ssh",
+            "--file",
+            imported.to_str().unwrap(),
+        ],
+        vec![
+            "create-test",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--id",
+            "onboarding",
+            "--title",
+            "Server onboarding",
+            "--banks",
+            "legacy,docker-ssh",
+        ],
+        vec![
+            "publish-test",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--id",
+            "onboarding",
+        ],
+    ] {
+        assert!(Command::new(ADMIN)
+            .args(arguments)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    let output = Command::new(ADMIN)
+        .args([
+            "show-published-test",
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.starts_with("onboarding\t"));
+    assert!(stdout.contains("2 questions"));
 }

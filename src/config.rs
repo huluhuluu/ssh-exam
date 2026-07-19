@@ -79,12 +79,12 @@ impl AppConfig {
             ("sudo_path", &self.sudo_path),
             ("admin_auth_path", &self.admin_auth_path),
         ] {
-            if !path.is_absolute() {
+            if !target_absolute(path) {
                 bail!("{label} must be an absolute path");
             }
         }
         if let Some(path) = &self.quiz_directory {
-            if !path.is_absolute() {
+            if !target_absolute(path) {
                 bail!("quiz_directory must be an absolute path");
             }
         }
@@ -154,6 +154,10 @@ impl AdminAuthConfig {
             .decode(&self.session_secret_base64)
             .context("session_secret_base64 is not valid base64")
     }
+}
+
+fn target_absolute(path: &std::path::Path) -> bool {
+    path.is_absolute() || path.to_string_lossy().starts_with('/')
 }
 
 #[cfg(test)]
