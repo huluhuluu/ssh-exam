@@ -28,7 +28,7 @@ pub struct AppConfig {
     pub busy_timeout_ms: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminAuthConfig {
     pub password_hash: String,

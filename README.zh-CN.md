@@ -56,7 +56,7 @@ authorized-keys 规则；任何异常都默认拒绝。
 > [!WARNING]
 > 从 `v0.2.x` 升级时，原有“仅转发”映射会被有意转换为普通映射。这些用户将获得
 > Unix 账号和 `sshd` 所允许的 Shell、远程命令、SFTP、VS Code 和转发能力。
-> 部署 `v0.3.0` 前必须复核原有 ProxyJump 映射。
+> 部署 `v0.3.x` 前必须复核原有 ProxyJump 映射。
 
 ## 快速开始
 
@@ -65,7 +65,7 @@ authorized-keys 规则；任何异常都默认拒绝。
 预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
 
 ```sh
-VERSION=v0.3.0
+VERSION=v0.3.1
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS

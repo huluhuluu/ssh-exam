@@ -64,7 +64,7 @@ connection normally.
 > Upgrading from `v0.2.x` intentionally converts every former forwarding-only
 > mapping into a normal mapping. Those users can receive shell, command, SFTP,
 > VS Code, and forwarding capabilities allowed by `sshd` and the Unix account.
-> Review old ProxyJump mappings before deploying `v0.3.0`.
+> Review old ProxyJump mappings before deploying `v0.3.x`.
 
 ## Quick Start
 
@@ -74,7 +74,7 @@ Prebuilt releases target Linux x86_64 with glibc. Build from source for other
 architectures or incompatible glibc versions.
 
 ```sh
-VERSION=v0.3.0
+VERSION=v0.3.1
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
