@@ -3,7 +3,7 @@
 # the host's normal AuthorizedKeysFile behavior and is the explicit bypass.
 # OpenSSH supplies %u (login), %f (SHA256 fingerprint), %t (key type), and %k
 # (base64 key blob). The helper validates all four and emits a forced command
-# while the selected Access mapping is pending.
+# while the registered person has not passed the active test revision.
 Match Group ssh-exam-gated
     PubkeyAuthentication yes
     PasswordAuthentication no

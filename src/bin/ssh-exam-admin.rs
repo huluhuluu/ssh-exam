@@ -18,7 +18,7 @@ use rand::{rngs::OsRng, RngCore};
 use ssh_exam_gate::{
     config::{AdminAuthConfig, AppConfig},
     db::{Db, TestDefinitionInput},
-    quiz::{Quiz, QuizCatalog},
+    quiz::{CompositionOptions, Quiz, QuizCatalog},
     web::{self, WebState},
 };
 
@@ -79,6 +79,12 @@ enum Command {
         pass_threshold: u32,
         #[arg(long, default_value_t = 3)]
         max_attempts: u32,
+        #[arg(long)]
+        question_limit: Option<u32>,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        shuffle_questions: bool,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        shuffle_choices: bool,
     },
     /// List saved tests / 查看测试
     ListTests {
@@ -91,6 +97,22 @@ enum Command {
         config: PathBuf,
         #[arg(long)]
         id: String,
+    },
+    /// List immutable publications for a test / 查看测试发布历史
+    ListPublications {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        id: String,
+    },
+    /// Activate an immutable prior publication / 启用历史发布版本
+    ActivatePublication {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        publication_id: i64,
     },
     /// Show the active immutable test revision / 查看当前发布版本
     ShowPublishedTest {
@@ -177,17 +199,33 @@ async fn run(arguments: Arguments) -> Result<()> {
             banks,
             pass_threshold,
             max_attempts,
+            question_limit,
+            shuffle_questions,
+            shuffle_choices,
         } => {
             let config = AppConfig::load(&config)?;
             let db = initialized_db(&config)?;
             let catalog = QuizCatalog::new(config.quiz_path, config.quiz_directory);
-            catalog.compose(title.clone(), &banks, pass_threshold, max_attempts)?;
+            catalog.compose(
+                title.clone(),
+                &banks,
+                CompositionOptions {
+                    pass_threshold_percent: pass_threshold,
+                    max_attempts,
+                    question_limit,
+                    shuffle_questions,
+                    shuffle_choices,
+                },
+            )?;
             db.create_test(&TestDefinitionInput {
                 id: id.clone(),
                 title,
                 bank_ids: banks,
                 pass_threshold_percent: pass_threshold,
                 max_attempts,
+                question_limit,
+                shuffle_questions,
+                shuffle_choices,
             })?;
             println!("test created: {id} / 测试已创建");
             Ok(())
@@ -221,10 +259,48 @@ async fn run(arguments: Arguments) -> Result<()> {
             let quiz = catalog.compose(
                 test.title,
                 &test.bank_ids,
-                test.pass_threshold_percent,
-                test.max_attempts,
+                CompositionOptions {
+                    pass_threshold_percent: test.pass_threshold_percent,
+                    max_attempts: test.max_attempts,
+                    question_limit: test.question_limit,
+                    shuffle_questions: test.shuffle_questions,
+                    shuffle_choices: test.shuffle_choices,
+                },
             )?;
             let published = db.publish_test(&id, &quiz)?;
+            println!("{}\t{}", published.test_id, published.revision);
+            Ok(())
+        }
+        Command::ListPublications { config, id } => {
+            let config = AppConfig::load(&config)?;
+            let db = initialized_db(&config)?;
+            for publication in db.list_publications(&id)? {
+                println!(
+                    "{}\t{}\t{}\t{} questions\t{} UTC",
+                    publication.publication_id,
+                    if publication.active {
+                        "active"
+                    } else {
+                        "history"
+                    },
+                    publication.revision,
+                    publication
+                        .quiz
+                        .question_limit
+                        .unwrap_or(publication.quiz.questions.len() as u32),
+                    publication.published_at
+                );
+            }
+            Ok(())
+        }
+        Command::ActivatePublication {
+            config,
+            id,
+            publication_id,
+        } => {
+            let config = AppConfig::load(&config)?;
+            let db = initialized_db(&config)?;
+            let published = db.activate_publication(&id, publication_id)?;
             println!("{}\t{}", published.test_id, published.revision);
             Ok(())
         }
@@ -239,7 +315,10 @@ async fn run(arguments: Arguments) -> Result<()> {
                 published.test_id,
                 published.revision,
                 published.quiz.title,
-                published.quiz.questions.len()
+                published
+                    .quiz
+                    .question_limit
+                    .unwrap_or(published.quiz.questions.len() as u32)
             );
             Ok(())
         }

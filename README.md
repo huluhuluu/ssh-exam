@@ -30,10 +30,12 @@ rules before access is granted.
 - **First-login TUI exam** for selected OpenSSH public-key logins.
 - **JSON question-bank import** for host, Docker, network, or general topics.
 - **Composable tests:** save multiple drafts, combine banks in a defined order,
-  and publish one immutable active revision.
+  set question limits and shuffle behavior, then publish an immutable revision.
+- **Publication history:** inspect and reactivate an earlier test revision
+  without rewriting its questions or audit history.
 - **Bilingual Web and TUI** with English, Chinese, and bilingual modes.
-- **Key-based identity** using Unix account + SHA256 fingerprint; key comments
-  and email-like labels are metadata only.
+- **Direct account ownership:** each person owns at most one Unix account, and
+  all enabled keys inherit it. Key comments and email-like labels are metadata.
 - **Normal SSH after passing:** shell, commands, VS Code, and forwarding remain
   governed by the server's existing `sshd` configuration.
 - **Loopback-only admin UI** with Argon2id passwords, CSRF protection, signed
@@ -55,8 +57,8 @@ flowchart LR
 
 OpenSSH supplies `%u`, `%f`, `%t`, and `%k` to `ssh-exam-key-policy`. The helper
 validates the requested Unix account, fingerprint, key type, key blob, person,
-Access mapping, and current test revision before it emits an authorized-keys
-line. It fails closed.
+and current test revision before it emits an authorized-keys line. It fails
+closed.
 
 Pending users receive `restrict,pty` plus a forced `ssh-exam-tui` command.
 Passed users receive the registered public key without forced-command or
@@ -64,16 +66,11 @@ forwarding restrictions, so the existing `sshd` configuration governs the
 connection normally.
 
 > [!WARNING]
-> Upgrading from `v0.2.x` intentionally converts every former forwarding-only
-> mapping into a normal mapping. Those users can receive shell, command, SFTP,
-> VS Code, and forwarding capabilities allowed by `sshd` and the Unix account.
-> Review old ProxyJump mappings before deploying `v0.3.x`.
-
-> [!NOTE]
-> Schema v4 removes question-bank selection from Access mappings. One globally
-> published test revision applies to every gated person. Publishing changed
-> content requires users to pass the new revision; republishing identical
-> content keeps the same revision and existing passes.
+> Schema v5 removes the former per-key account rules. During upgrade, a person
+> is assigned an old Unix account only when exactly one enabled account is
+> present and that account is not shared with another person. Ambiguous records remain
+> unassigned and fail closed. Back up the database, run `migrate`, then review
+> every unassigned person before reloading OpenSSH.
 
 ## Quick Start
 
@@ -83,7 +80,7 @@ Prebuilt releases target Linux x86_64 with glibc. Build from source for other
 architectures or incompatible glibc versions.
 
 ```sh
-VERSION=v0.4.0
+VERSION=v0.4.1
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -159,10 +156,11 @@ Open `http://127.0.0.1:8787/`, then:
 1. Import or review JSON files under **Question banks**.
 2. Create a test, list its bank IDs in composition order, and publish it.
 3. Create a person and open the person's detail page.
-4. Register one or more public keys and map them to an existing Unix account.
+4. Assign the person's existing Unix account and register one or more keys.
 5. Reset the current exam on the detail page when another attempt is required.
 
-Creating a person or mapping still does not activate OpenSSH interception.
+Creating people and keys does not activate interception by itself. OpenSSH must
+also use the supplied `Match Group` configuration for the account.
 
 ## Quiz Banks
 
@@ -185,15 +183,19 @@ container, or run commands.
 
 ## Tests and Publication
 
-A saved test contains a stable ID, title, ordered bank IDs, pass threshold, and
-attempt limit. Multiple draft tests can coexist. Publishing resolves all bank
-files into a complete JSON snapshot stored in SQLite and computes a SHA-256
-revision from the test identity, bank order, policy, and questions.
+A saved test contains a stable ID, title, ordered bank IDs, pass threshold,
+attempt limit, optional questions-per-attempt limit, and independent question
+and choice shuffle controls. Multiple drafts can coexist and can be edited from
+their detail pages. Publishing resolves all bank files into a complete JSON
+snapshot stored in SQLite and computes a SHA-256 revision from the test
+identity, bank order, policy, and questions.
 
 - Editing a bank or draft does not mutate the active snapshot.
 - Publishing changed content activates a new revision and requires a new pass.
 - Republishing byte-equivalent content reuses its revision.
 - Attempts and passes are recorded against test ID + revision.
+- Publication history is immutable; reactivating an earlier revision restores
+  passes previously earned for that exact revision.
 
 Useful non-interactive operations:
 
@@ -203,9 +205,13 @@ ssh-exam-admin import-bank --config /etc/ssh-exam/config.json \
 ssh-exam-admin list-banks --config /etc/ssh-exam/config.json
 ssh-exam-admin create-test --config /etc/ssh-exam/config.json \
   --id onboarding --title 'Server onboarding' \
-  --banks host-ssh,docker-ssh --pass-threshold 80 --max-attempts 3
+  --banks host-ssh,docker-ssh --pass-threshold 80 --max-attempts 3 \
+  --question-limit 20 --shuffle-questions true --shuffle-choices true
 ssh-exam-admin list-tests --config /etc/ssh-exam/config.json
 ssh-exam-admin publish-test --config /etc/ssh-exam/config.json --id onboarding
+ssh-exam-admin list-publications --config /etc/ssh-exam/config.json --id onboarding
+ssh-exam-admin activate-publication --config /etc/ssh-exam/config.json \
+  --id onboarding --publication-id <PUBLICATION_ID>
 ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
 ```
 
@@ -273,8 +279,8 @@ Docker group membership.
 2. Install the binaries, service identities, configuration, state permissions,
    and reviewed sudoers rule. Validate it with
    `visudo -cf deploy/sudoers.snippet`.
-3. Register a disposable person, key, and mapping; import banks and publish a
-   disposable test through the admin.
+3. Register a disposable person with its Unix account and key; import banks and
+   publish a disposable test through the admin.
 4. Complete the isolated test workflow with the production application config.
 5. Add only intended accounts to `ssh-exam-gated` and install the reviewed
    `deploy/sshd_config.snippet`.
@@ -314,14 +320,12 @@ After passing, reconnect with VS Code normally.
 
 - Identity is the requested Unix account plus the SHA256 fingerprint of the
   presented public key. Key comments and email addresses are not identity.
-- Policy output is emitted only for enabled people, keys, and mappings.
+- Policy output is emitted only when the person and key are enabled and the
+  requested Unix account exactly matches the person's assigned account.
 - The admin is loopback-only and uses Argon2id, failed-login throttling, signed
   HttpOnly cookies, CSRF tokens, and one-time signed flash messages.
-- An Access mapping may apply to every registered key for a person or to one
-  selected device key.
 - Pass state belongs to the person and the immutable test revision. All enabled
-  keys and mappings for that person inherit the pass only while that revision
-  remains active.
+  keys for that person inherit the pass only while that revision remains active.
 - Keep a recovery account outside the gated group. The gate fails closed, so a
   broken database path or permission can deny gated public-key logins.
 
@@ -345,7 +349,7 @@ visudo -cf deploy/sudoers.snippet
 
 | Symptom | Check |
 |---|---|
-| A normal session appears before the exam | Effective `Match Group`, group membership, mapping, person pass state, and `%u/%f/%t/%k` command arguments |
+| A normal session appears before the exam | Effective `Match Group`, group membership, assigned Unix account, person pass state, and `%u/%f/%t/%k` command arguments |
 | Public key is denied | Registered fingerprint and key material, enabled flags, database permissions, and fail-closed errors in SSH logs |
 | TUI does not appear in VS Code | Complete enrollment with `ssh -t` in a real terminal |
 | Test port works only inside Docker | Publish the port or forward it through an existing SSH connection |

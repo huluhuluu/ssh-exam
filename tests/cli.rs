@@ -7,7 +7,7 @@ use std::{
 
 use ssh_exam_gate::{
     config::AppConfig,
-    db::{BindingInput, Db},
+    db::Db,
     quiz::{BankEnvironment, Question, Quiz},
 };
 use tempfile::TempDir;
@@ -127,17 +127,10 @@ fn tui_rejects_connection_when_no_test_is_published() {
     let (config_path, config) = test_config(&directory);
     let db = Db::new(&config.database_path, Duration::from_secs(1));
     db.initialize().unwrap();
-    let person = db.create_person("Bank CLI Test").unwrap();
+    let person = db.create_person("Bank CLI Test", Some("root")).unwrap();
     let key = db
         .add_key(person, "ssh-ed25519 aGVsbG8= test-device")
         .unwrap();
-    db.add_binding(&BindingInput {
-        person_id: person,
-        ssh_key_id: None,
-        unix_username: "root".to_owned(),
-    })
-    .unwrap();
-
     let output = Command::new(TUI)
         .env("SUDO_USER", "root")
         .args([
@@ -185,6 +178,9 @@ fn admin_hashes_stdin_password_and_migrates_database() {
         environment: BankEnvironment::General,
         pass_threshold_percent: 80,
         max_attempts: 3,
+        question_limit: None,
+        shuffle_questions: true,
+        shuffle_choices: true,
         questions: vec![Question {
             prompt: "Ready?".to_owned(),
             choices: vec!["Yes".to_owned(), "No".to_owned()],
@@ -214,6 +210,9 @@ fn admin_initializes_rotates_imports_composes_and_publishes() {
         environment: BankEnvironment::General,
         pass_threshold_percent: 80,
         max_attempts: 3,
+        question_limit: None,
+        shuffle_questions: true,
+        shuffle_choices: true,
         questions: vec![Question {
             prompt: "Ready?".to_owned(),
             choices: vec!["Yes".to_owned(), "No".to_owned()],
@@ -264,6 +263,12 @@ fn admin_initializes_rotates_imports_composes_and_publishes() {
             "Server onboarding",
             "--banks",
             "legacy,docker-ssh",
+            "--question-limit",
+            "1",
+            "--shuffle-questions",
+            "false",
+            "--shuffle-choices",
+            "false",
         ],
         vec![
             "publish-test",
@@ -291,5 +296,34 @@ fn admin_initializes_rotates_imports_composes_and_publishes() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.starts_with("onboarding\t"));
-    assert!(stdout.contains("2 questions"));
+    assert!(stdout.contains("1 questions"));
+
+    let output = Command::new(ADMIN)
+        .args([
+            "list-publications",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--id",
+            "onboarding",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("\tactive\t"));
+    assert!(stdout.contains("\t1 questions\t"));
+    let publication_id = stdout.split('\t').next().unwrap();
+    let output = Command::new(ADMIN)
+        .args([
+            "activate-publication",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--id",
+            "onboarding",
+            "--publication-id",
+            publication_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
 }

@@ -13,14 +13,15 @@
   {% else %}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>{{ labels.person }}</th><th>{{ labels.account_status }}</th><th>{{ labels.exam_status }}</th><th>{{ labels.attempts }}</th><th>{{ labels.device_keys }}</th><th>{{ labels.access_mappings }}</th><th>{{ labels.action }}</th></tr></thead>
+        <thead><tr><th>{{ labels.person }}</th><th>{{ labels.unix_account }}</th><th>{{ labels.account_status }}</th><th>{{ labels.exam_status }}</th><th>{{ labels.attempts }}</th><th>{{ labels.device_keys }}</th><th>{{ labels.action }}</th></tr></thead>
         <tbody>
         {% for item in people %}
           <tr>
             <td><strong>{{ item.person.display_name }}</strong><br><span class="muted">ID {{ item.person.id }}</span></td>
+            <td>{% if item.person.unix_username.is_some() %}<code>{{ item.person.unix_username.as_ref().unwrap() }}</code>{% else %}<span class="status pending">{{ labels.unassigned }}</span>{% endif %}</td>
             <td>{% if item.person.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</td>
             <td>{% if item.person.passed_at.is_some() %}<span class="status good">{{ labels.passed }}</span>{% else %}<span class="status pending">{{ labels.pending }}</span>{% endif %}</td>
-            <td>{{ item.attempt_count }}</td><td>{{ item.keys.len() }}</td><td>{{ item.mappings.len() }}</td>
+            <td>{{ item.attempt_count }}</td><td>{{ item.keys.len() }}</td>
             <td><a class="text-action" href="/people/{{ item.person.id }}">{{ labels.view_details }}</a></td>
           </tr>
         {% endfor %}
@@ -36,6 +37,7 @@
   <form class="form-grid" method="post" action="/persons">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div><label for="display-name">{{ labels.display_name }}</label><input id="display-name" name="display_name" maxlength="200" required></div>
+    <div><label for="unix-username">{{ labels.unix_account }}</label><input id="unix-username" name="unix_username" maxlength="32" required></div>
     <div style="align-self:end"><button class="primary" type="submit">{{ labels.create_person }}</button></div>
   </form>
 </section>

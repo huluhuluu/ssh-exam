@@ -44,6 +44,12 @@ pub struct Quiz {
     pub pass_threshold_percent: u32,
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
+    #[serde(default)]
+    pub question_limit: Option<u32>,
+    #[serde(default = "default_true")]
+    pub shuffle_questions: bool,
+    #[serde(default = "default_true")]
+    pub shuffle_choices: bool,
     pub questions: Vec<Question>,
 }
 
@@ -97,6 +103,19 @@ fn default_pass_threshold() -> u32 {
 
 fn default_max_attempts() -> u32 {
     3
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CompositionOptions {
+    pub pass_threshold_percent: u32,
+    pub max_attempts: u32,
+    pub question_limit: Option<u32>,
+    pub shuffle_questions: bool,
+    pub shuffle_choices: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Quiz {
@@ -245,6 +264,12 @@ impl Quiz {
         if self.questions.is_empty() || self.questions.len() > 200 {
             bail!("quiz must contain between 1 and 200 questions");
         }
+        if self
+            .question_limit
+            .is_some_and(|limit| limit == 0 || limit as usize > self.questions.len())
+        {
+            bail!("question_limit must not exceed the available question count");
+        }
         for (index, question) in self.questions.iter().enumerate() {
             if !valid_text(&question.prompt, 2_000) {
                 bail!(
@@ -283,13 +308,20 @@ impl Quiz {
     pub fn prepare(&self) -> PreparedQuiz {
         let mut rng = OsRng;
         let mut questions = self.questions.clone();
-        questions.shuffle(&mut rng);
+        if self.shuffle_questions {
+            questions.shuffle(&mut rng);
+        }
+        if let Some(limit) = self.question_limit {
+            questions.truncate(limit as usize);
+        }
         let questions = questions
             .into_iter()
             .map(|question| {
                 let correct = question.choices[question.correct_index].clone();
                 let mut choices = question.choices;
-                choices.shuffle(&mut rng);
+                if self.shuffle_choices {
+                    choices.shuffle(&mut rng);
+                }
                 let correct_index = choices
                     .iter()
                     .position(|choice| choice == &correct)
@@ -386,8 +418,7 @@ impl QuizCatalog {
         &self,
         title: String,
         bank_ids: &[String],
-        pass_threshold_percent: u32,
-        max_attempts: u32,
+        options: CompositionOptions,
     ) -> Result<Quiz> {
         if bank_ids.is_empty() {
             bail!("a test must include at least one question bank");
@@ -411,8 +442,11 @@ impl QuizCatalog {
         let quiz = Quiz {
             title,
             environment: environment.unwrap_or_default(),
-            pass_threshold_percent,
-            max_attempts,
+            pass_threshold_percent: options.pass_threshold_percent,
+            max_attempts: options.max_attempts,
+            question_limit: options.question_limit,
+            shuffle_questions: options.shuffle_questions,
+            shuffle_choices: options.shuffle_choices,
             questions,
         };
         quiz.validate()?;
@@ -627,6 +661,9 @@ mod tests {
             environment: BankEnvironment::General,
             pass_threshold_percent: 80,
             max_attempts: 3,
+            question_limit: None,
+            shuffle_questions: true,
+            shuffle_choices: true,
             questions: (0..5)
                 .map(|index| Question {
                     prompt: format!("Question {index}"),
@@ -679,7 +716,43 @@ mod tests {
         let mut invalid = quiz();
         invalid.max_attempts = 0;
         assert!(invalid.validate().is_err());
+        let mut invalid_limit = quiz();
+        invalid_limit.question_limit = Some(6);
+        assert!(invalid_limit.validate().is_err());
         assert!(quiz().prepare().score(&[]).is_err());
+    }
+
+    #[test]
+    fn preparation_respects_limit_and_order_controls() {
+        let mut quiz = quiz();
+        quiz.question_limit = Some(2);
+        quiz.shuffle_questions = false;
+        quiz.shuffle_choices = false;
+        let prepared = quiz.prepare();
+        assert_eq!(prepared.questions.len(), 2);
+        assert_eq!(prepared.questions[0].prompt, "Question 0");
+        assert_eq!(prepared.questions[0].choices, ["Correct", "Wrong"]);
+        assert_eq!(prepared.questions[0].correct_index, 0);
+    }
+
+    #[test]
+    fn older_json_uses_randomized_full_exam_defaults() {
+        let quiz = Quiz::from_slice(
+            br#"{
+                "title":"Safety",
+                "pass_threshold_percent":80,
+                "max_attempts":3,
+                "questions":[{
+                    "prompt":"Ready?",
+                    "choices":["Yes","No"],
+                    "correct_index":0
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(quiz.question_limit, None);
+        assert!(quiz.shuffle_questions);
+        assert!(quiz.shuffle_choices);
     }
 
     #[test]

@@ -15,6 +15,7 @@ const MIGRATION_1: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_mapping_bank.sql");
 const MIGRATION_3: &str = include_str!("../migrations/0003_unified_access.sql");
 const MIGRATION_4: &str = include_str!("../migrations/0004_tests_and_publications.sql");
+const MIGRATION_5: &str = include_str!("../migrations/0005_direct_accounts_and_test_options.sql");
 
 #[derive(Debug, Error)]
 pub enum GateError {
@@ -40,6 +41,7 @@ pub struct PersonRecord {
     pub display_name: String,
     pub enabled: bool,
     pub passed_at: Option<i64>,
+    pub unix_username: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,19 +56,9 @@ pub struct KeyRecord {
 }
 
 #[derive(Clone, Debug)]
-pub struct BindingRecord {
-    pub id: i64,
-    pub person_id: i64,
-    pub ssh_key_id: Option<i64>,
-    pub unix_username: String,
-    pub enabled: bool,
-}
-
-#[derive(Clone, Debug)]
 pub struct PersonView {
     pub person: PersonRecord,
     pub keys: Vec<KeyRecord>,
-    pub bindings: Vec<BindingRecord>,
     pub attempt_count: u32,
 }
 
@@ -93,13 +85,6 @@ pub struct PendingIdentity {
 }
 
 #[derive(Clone, Debug)]
-pub struct BindingInput {
-    pub person_id: i64,
-    pub ssh_key_id: Option<i64>,
-    pub unix_username: String,
-}
-
-#[derive(Clone, Debug)]
 pub struct AttemptInput<'a> {
     pub person_id: i64,
     pub test_id: &'a str,
@@ -118,6 +103,9 @@ pub struct TestDefinitionRecord {
     pub bank_ids: Vec<String>,
     pub pass_threshold_percent: u32,
     pub max_attempts: u32,
+    pub question_limit: Option<u32>,
+    pub shuffle_questions: bool,
+    pub shuffle_choices: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -129,6 +117,9 @@ pub struct TestDefinitionInput {
     pub bank_ids: Vec<String>,
     pub pass_threshold_percent: u32,
     pub max_attempts: u32,
+    pub question_limit: Option<u32>,
+    pub shuffle_questions: bool,
+    pub shuffle_choices: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +129,16 @@ pub struct PublishedTest {
     pub revision: String,
     pub quiz: Quiz,
     pub published_at: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PublicationRecord {
+    pub publication_id: i64,
+    pub test_id: String,
+    pub revision: String,
+    pub quiz: Quiz,
+    pub published_at: String,
+    pub active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -167,6 +168,7 @@ impl Db {
             (2, MIGRATION_2),
             (3, MIGRATION_3),
             (4, MIGRATION_4),
+            (5, MIGRATION_5),
         ] {
             let applied = transaction
                 .query_row(
@@ -188,14 +190,52 @@ impl Db {
         Ok(())
     }
 
-    pub fn create_person(&self, display_name: &str) -> GateResult<i64> {
+    pub fn create_person(
+        &self,
+        display_name: &str,
+        unix_username: Option<&str>,
+    ) -> GateResult<i64> {
         let display_name = validate_display_name(display_name)?;
+        if let Some(username) = unix_username {
+            validate_unix_username(username)?;
+        }
         let connection = self.open_writable()?;
-        connection.execute(
-            "INSERT INTO persons(display_name, created_at) VALUES (?1, unixepoch())",
-            [display_name],
-        )?;
+        let result = connection.execute(
+            "INSERT INTO persons(display_name, unix_username, created_at)
+             VALUES (?1, ?2, unixepoch())",
+            params![display_name, unix_username],
+        );
+        if let Err(error) = result {
+            if is_constraint(&error) {
+                return Err(GateError::Conflict(
+                    "that Unix login is already assigned to another person".to_owned(),
+                ));
+            }
+            return Err(error.into());
+        }
         Ok(connection.last_insert_rowid())
+    }
+
+    pub fn set_person_unix_username(
+        &self,
+        person_id: i64,
+        unix_username: Option<&str>,
+    ) -> GateResult<()> {
+        if let Some(username) = unix_username {
+            validate_unix_username(username)?;
+        }
+        let connection = self.open_writable()?;
+        let result = connection.execute(
+            "UPDATE persons SET unix_username = ?1 WHERE id = ?2",
+            params![unix_username, person_id],
+        );
+        match result {
+            Ok(changed) => expect_changed(changed),
+            Err(error) if is_constraint(&error) => Err(GateError::Conflict(
+                "that Unix login is already assigned to another person".to_owned(),
+            )),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn set_person_enabled(&self, person_id: i64, enabled: bool) -> GateResult<()> {
@@ -265,138 +305,6 @@ impl Db {
         expect_changed(connection.execute("DELETE FROM ssh_keys WHERE id = ?1", [key_id])?)
     }
 
-    pub fn add_binding(&self, input: &BindingInput) -> GateResult<i64> {
-        validate_unix_username(&input.unix_username)?;
-
-        let mut connection = self.open_writable()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let person_exists = transaction
-            .query_row(
-                "SELECT 1 FROM persons WHERE id = ?1",
-                [input.person_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !person_exists {
-            return Err(GateError::NotFound);
-        }
-        if let Some(key_id) = input.ssh_key_id {
-            let owner = transaction
-                .query_row(
-                    "SELECT person_id FROM ssh_keys WHERE id = ?1",
-                    [key_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-            if owner != Some(input.person_id) {
-                return Err(GateError::Invalid(
-                    "selected key does not belong to the person".to_owned(),
-                ));
-            }
-        }
-
-        let overlapping = transaction
-            .query_row(
-                "SELECT 1 FROM login_bindings
-                 WHERE enabled = 1 AND person_id = ?1 AND unix_username = ?2
-                   AND (ssh_key_id IS NULL OR ?3 IS NULL OR ssh_key_id = ?3)
-                 LIMIT 1",
-                params![input.person_id, input.unix_username, input.ssh_key_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if overlapping {
-            return Err(GateError::Conflict(
-                "an overlapping enabled binding already exists".to_owned(),
-            ));
-        }
-
-        let inserted = transaction.execute(
-            "INSERT INTO login_bindings(person_id, ssh_key_id, unix_username, created_at)
-             VALUES (?1, ?2, ?3, unixepoch())",
-            params![input.person_id, input.ssh_key_id, input.unix_username],
-        );
-        if let Err(error) = inserted {
-            if is_constraint(&error) {
-                return Err(GateError::Conflict(
-                    "that Access mapping already exists".to_owned(),
-                ));
-            }
-            return Err(error.into());
-        }
-        let id = transaction.last_insert_rowid();
-        transaction.commit()?;
-        Ok(id)
-    }
-
-    pub fn set_binding_enabled(&self, binding_id: i64, enabled: bool) -> GateResult<()> {
-        let mut connection = self.open_writable()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if !enabled {
-            expect_changed(transaction.execute(
-                "UPDATE login_bindings SET enabled = 0 WHERE id = ?1",
-                [binding_id],
-            )?)?;
-            transaction.commit()?;
-            return Ok(());
-        }
-        let binding = transaction
-            .query_row(
-                "SELECT person_id, ssh_key_id, unix_username
-                 FROM login_bindings WHERE id = ?1",
-                [binding_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, Option<i64>>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or(GateError::NotFound)?;
-        validate_unix_username(&binding.2)?;
-        if let Some(key_id) = binding.1 {
-            let owner = transaction
-                .query_row(
-                    "SELECT person_id FROM ssh_keys WHERE id = ?1 AND enabled = 1",
-                    [key_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-            if owner != Some(binding.0) {
-                return Err(GateError::Invalid(
-                    "selected key is disabled or belongs to another person".to_owned(),
-                ));
-            }
-        }
-        let overlap = transaction
-            .query_row(
-                "SELECT 1 FROM login_bindings
-                 WHERE id != ?1 AND enabled = 1 AND person_id = ?2
-                   AND unix_username = ?3
-                   AND (ssh_key_id IS NULL OR ?4 IS NULL OR ssh_key_id = ?4)
-                 LIMIT 1",
-                params![binding_id, binding.0, binding.2, binding.1],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if overlap {
-            return Err(GateError::Conflict(
-                "an overlapping enabled binding already exists".to_owned(),
-            ));
-        }
-        transaction.execute(
-            "UPDATE login_bindings SET enabled = 1 WHERE id = ?1",
-            [binding_id],
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
-
     pub fn reset_exam(&self, person_id: i64) -> GateResult<()> {
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -439,22 +347,20 @@ impl Db {
         let connection = self.open_read_only()?;
         let raw = connection
             .query_row(
-                "SELECT p.id, b.unix_username, k.fingerprint, k.key_type, k.key_base64,
+                "SELECT p.id, p.unix_username, k.fingerprint, k.key_type, k.key_base64,
                         EXISTS(
                             SELECT 1 FROM exam_passes pass
                             WHERE pass.person_id = p.id
                               AND pass.test_id = publication.test_id
                               AND pass.revision = publication.revision
                         ), publication.test_id, publication.revision
-                 FROM login_bindings b
-                 JOIN persons p ON p.id = b.person_id
+                 FROM persons p
                  JOIN ssh_keys k ON k.person_id = p.id
                  JOIN active_test_publication active ON active.singleton = 1
                  JOIN test_publications publication ON publication.id = active.publication_id
-                 WHERE b.enabled = 1 AND p.enabled = 1 AND k.enabled = 1
-                   AND b.unix_username = ?1 AND k.fingerprint = ?2
-                   AND (b.ssh_key_id IS NULL OR b.ssh_key_id = k.id)
-                 ORDER BY b.ssh_key_id IS NOT NULL DESC, b.id ASC
+                 WHERE p.enabled = 1 AND k.enabled = 1
+                   AND p.unix_username = ?1 AND k.fingerprint = ?2
+                 ORDER BY k.id ASC
                  LIMIT 1",
                 params![unix_username, fingerprint],
                 |row| {
@@ -599,7 +505,7 @@ impl Db {
                        ON pass.person_id = p.id
                       AND pass.test_id = publication.test_id
                       AND pass.revision = publication.revision
-                     WHERE active.singleton = 1)
+                     WHERE active.singleton = 1), p.unix_username
              FROM persons p ORDER BY p.display_name, p.id",
         )?;
         let persons = statement
@@ -609,13 +515,13 @@ impl Db {
                     display_name: row.get(1)?,
                     enabled: row.get(2)?,
                     passed_at: row.get(3)?,
+                    unix_username: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut views = Vec::with_capacity(persons.len());
         for person in persons {
             let keys = load_keys(&connection, person.id)?;
-            let bindings = load_bindings(&connection, person.id)?;
             let attempt_count = connection.query_row(
                 "SELECT count(*) FROM exam_attempts attempt
                  JOIN active_test_publication active ON active.singleton = 1
@@ -629,7 +535,6 @@ impl Db {
             views.push(PersonView {
                 person,
                 keys,
-                bindings,
                 attempt_count,
             });
         }
@@ -651,14 +556,17 @@ impl Db {
         let result = connection.execute(
             "INSERT INTO tests(
                 id, title, bank_ids_json, pass_threshold_percent, max_attempts,
-                created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), unixepoch())",
+                question_limit, shuffle_questions, shuffle_choices, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, unixepoch(), unixepoch())",
             params![
                 input.id,
                 input.title.trim(),
                 bank_ids_json,
                 input.pass_threshold_percent,
-                input.max_attempts
+                input.max_attempts,
+                input.question_limit,
+                input.shuffle_questions,
+                input.shuffle_choices,
             ],
         );
         match result {
@@ -682,13 +590,17 @@ impl Db {
         expect_changed(connection.execute(
             "UPDATE tests SET title = ?1, bank_ids_json = ?2,
                     pass_threshold_percent = ?3, max_attempts = ?4,
+                    question_limit = ?5, shuffle_questions = ?6, shuffle_choices = ?7,
                     updated_at = unixepoch()
-             WHERE id = ?5",
+             WHERE id = ?8",
             params![
                 input.title.trim(),
                 bank_ids_json,
                 input.pass_threshold_percent,
                 input.max_attempts,
+                input.question_limit,
+                input.shuffle_questions,
+                input.shuffle_choices,
                 test_id
             ],
         )?)
@@ -698,7 +610,7 @@ impl Db {
         let connection = self.open_read_only()?;
         let mut statement = connection.prepare(
             "SELECT id, title, bank_ids_json, pass_threshold_percent, max_attempts,
-                    created_at, updated_at
+                    question_limit, shuffle_questions, shuffle_choices, created_at, updated_at
              FROM tests ORDER BY title, id",
         )?;
         let rows = statement
@@ -709,8 +621,11 @@ impl Db {
                     row.get::<_, String>(2)?,
                     row.get::<_, u32>(3)?,
                     row.get::<_, u32>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<u32>>(5)?,
+                    row.get::<_, bool>(6)?,
+                    row.get::<_, bool>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -732,6 +647,9 @@ impl Db {
         if quiz.title != test.title
             || quiz.pass_threshold_percent != test.pass_threshold_percent
             || quiz.max_attempts != test.max_attempts
+            || quiz.question_limit != test.question_limit
+            || quiz.shuffle_questions != test.shuffle_questions
+            || quiz.shuffle_choices != test.shuffle_choices
         {
             return Err(GateError::Invalid(
                 "published quiz does not match the saved test definition".to_owned(),
@@ -815,6 +733,79 @@ impl Db {
         .transpose()
     }
 
+    pub fn list_publications(&self, test_id: &str) -> GateResult<Vec<PublicationRecord>> {
+        validate_test_id(test_id)?;
+        let connection = self.open_read_only()?;
+        let mut statement = connection.prepare(
+            "SELECT publication.id, publication.test_id, publication.revision,
+                    publication.quiz_json, datetime(publication.published_at, 'unixepoch'),
+                    active.publication_id IS NOT NULL
+             FROM test_publications publication
+             LEFT JOIN active_test_publication active
+               ON active.publication_id = publication.id AND active.singleton = 1
+             WHERE publication.test_id = ?1
+             ORDER BY publication.published_at DESC, publication.id DESC",
+        )?;
+        let rows = statement
+            .query_map([test_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(
+                |(publication_id, test_id, revision, quiz_json, published_at, active)| {
+                    validate_test_id(&test_id)?;
+                    validate_revision(&revision)?;
+                    let quiz = Quiz::from_slice(quiz_json.as_bytes())
+                        .map_err(|error| GateError::Invalid(error.to_string()))?;
+                    Ok(PublicationRecord {
+                        publication_id,
+                        test_id,
+                        revision,
+                        quiz,
+                        published_at,
+                        active,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    pub fn activate_publication(
+        &self,
+        test_id: &str,
+        publication_id: i64,
+    ) -> GateResult<PublishedTest> {
+        validate_test_id(test_id)?;
+        let mut connection = self.open_writable()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM test_publications WHERE id = ?1 AND test_id = ?2",
+                params![publication_id, test_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(GateError::NotFound);
+        }
+        transaction.execute(
+            "INSERT INTO active_test_publication(singleton, publication_id) VALUES (1, ?1)
+             ON CONFLICT(singleton) DO UPDATE SET publication_id = excluded.publication_id",
+            [publication_id],
+        )?;
+        transaction.commit()?;
+        self.published_test()?.ok_or(GateError::NotFound)
+    }
+
     pub fn ensure_legacy_test(&self, quiz: &Quiz) -> GateResult<PublishedTest> {
         if let Some(published) = self.published_test()? {
             return Ok(published);
@@ -826,6 +817,9 @@ impl Db {
                 bank_ids: vec![LEGACY_BANK_ID.to_owned()],
                 pass_threshold_percent: quiz.pass_threshold_percent,
                 max_attempts: quiz.max_attempts,
+                question_limit: quiz.question_limit,
+                shuffle_questions: quiz.shuffle_questions,
+                shuffle_choices: quiz.shuffle_choices,
             })?;
         }
         let published = self.publish_test(LEGACY_BANK_ID, quiz)?;
@@ -882,33 +876,6 @@ fn load_keys(connection: &Connection, person_id: i64) -> GateResult<Vec<KeyRecor
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(keys)
-}
-
-fn load_bindings(connection: &Connection, person_id: i64) -> GateResult<Vec<BindingRecord>> {
-    let mut statement = connection.prepare(
-        "SELECT id, person_id, ssh_key_id, unix_username, enabled
-         FROM login_bindings WHERE person_id = ?1 ORDER BY id",
-    )?;
-    let rows = statement.query_map([person_id], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, bool>(4)?,
-        ))
-    })?;
-    rows.map(|row| {
-        let (id, person_id, ssh_key_id, unix_username, enabled) = row?;
-        Ok(BindingRecord {
-            id,
-            person_id,
-            ssh_key_id,
-            unix_username,
-            enabled,
-        })
-    })
-    .collect()
 }
 
 fn validate_display_name(value: &str) -> GateResult<&str> {
@@ -983,9 +950,31 @@ fn active_test_identity(connection: &Connection) -> GateResult<Option<(String, S
 }
 
 fn parse_test_row(
-    row: (String, String, String, u32, u32, i64, i64),
+    row: (
+        String,
+        String,
+        String,
+        u32,
+        u32,
+        Option<u32>,
+        bool,
+        bool,
+        i64,
+        i64,
+    ),
 ) -> GateResult<TestDefinitionRecord> {
-    let (id, title, bank_ids_json, threshold, attempts, created_at, updated_at) = row;
+    let (
+        id,
+        title,
+        bank_ids_json,
+        threshold,
+        attempts,
+        question_limit,
+        shuffle_questions,
+        shuffle_choices,
+        created_at,
+        updated_at,
+    ) = row;
     validate_test_id(&id)?;
     let bank_ids: Vec<String> = serde_json::from_str(&bank_ids_json)
         .map_err(|error| GateError::Invalid(format!("invalid stored bank list: {error}")))?;
@@ -995,6 +984,9 @@ fn parse_test_row(
         bank_ids: bank_ids.clone(),
         pass_threshold_percent: threshold,
         max_attempts: attempts,
+        question_limit,
+        shuffle_questions,
+        shuffle_choices,
     };
     validate_test_input(&input)?;
     Ok(TestDefinitionRecord {
@@ -1003,6 +995,9 @@ fn parse_test_row(
         bank_ids,
         pass_threshold_percent: threshold,
         max_attempts: attempts,
+        question_limit,
+        shuffle_questions,
+        shuffle_choices,
         created_at,
         updated_at,
     })
@@ -1033,6 +1028,14 @@ fn validate_test_input(input: &TestDefinitionInput) -> GateResult<()> {
     if !(1..=100).contains(&input.max_attempts) {
         return Err(GateError::Invalid(
             "maximum attempts must be between 1 and 100".to_owned(),
+        ));
+    }
+    if input
+        .question_limit
+        .is_some_and(|limit| !(1..=200).contains(&limit))
+    {
+        return Err(GateError::Invalid(
+            "question limit must be between 1 and 200".to_owned(),
         ));
     }
     Ok(())
@@ -1072,6 +1075,9 @@ mod tests {
             environment: Default::default(),
             pass_threshold_percent: 80,
             max_attempts: 3,
+            question_limit: None,
+            shuffle_questions: true,
+            shuffle_choices: true,
             questions: vec![crate::quiz::Question {
                 prompt: "Ready?".to_owned(),
                 choices: vec!["Yes".to_owned(), "No".to_owned()],
@@ -1080,21 +1086,12 @@ mod tests {
         }
     }
 
-    fn binding(person_id: i64) -> BindingInput {
-        BindingInput {
-            person_id,
-            ssh_key_id: None,
-            unix_username: "root".to_owned(),
-        }
-    }
-
     #[test]
     fn pass_is_inherited_by_every_enabled_key_and_reset_clears_attempts() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let person = db.create_person("Alice").unwrap();
+        let person = db.create_person("Alice", Some("root")).unwrap();
         let key_1 = db.add_key(person, KEY_1).unwrap();
         let key_2 = db.add_key(person, KEY_2).unwrap();
-        db.add_binding(&binding(person)).unwrap();
 
         for key in [&key_1, &key_2] {
             assert!(
@@ -1133,9 +1130,8 @@ mod tests {
     #[test]
     fn disabled_person_or_key_fails_closed() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let person = db.create_person("Alice").unwrap();
+        let person = db.create_person("Alice", Some("root")).unwrap();
         let key = db.add_key(person, KEY_1).unwrap();
-        db.add_binding(&binding(person)).unwrap();
         assert!(db
             .resolve_policy("root", &key.fingerprint)
             .unwrap()
@@ -1154,27 +1150,26 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_fingerprint_and_wrong_key_owner_are_rejected() {
+    fn duplicate_fingerprint_and_unix_account_are_rejected() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let first = db.create_person("First").unwrap();
-        let second = db.create_person("Second").unwrap();
+        let first = db.create_person("First", Some("root")).unwrap();
+        let second = db.create_person("Second", None).unwrap();
         let key = db.add_key(first, KEY_1).unwrap();
         assert!(matches!(
             db.add_key(second, KEY_1),
             Err(GateError::Conflict(_))
         ));
-        let mut binding = binding(second);
-        binding.ssh_key_id = Some(key.id);
+        assert_eq!(key.person_id, first);
         assert!(matches!(
-            db.add_binding(&binding),
-            Err(GateError::Invalid(_))
+            db.set_person_unix_username(second, Some("root")),
+            Err(GateError::Conflict(_))
         ));
     }
 
     #[test]
     fn attempt_limit_is_transactional() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let person = db.create_person("Alice").unwrap();
+        let person = db.create_person("Alice", None).unwrap();
         for _ in 0..3 {
             db.record_attempt(&AttemptInput {
                 person_id: person,
@@ -1222,14 +1217,14 @@ mod tests {
                 [],
             )
             .unwrap();
-        let error = db.create_person("Contender").unwrap_err();
+        let error = db.create_person("Contender", None).unwrap_err();
         assert!(matches!(
             error,
             GateError::Database(rusqlite::Error::SqliteFailure(code, _))
                 if matches!(code.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
         ));
         transaction.rollback().unwrap();
-        db.create_person("Recovered").unwrap();
+        db.create_person("Recovered", None).unwrap();
     }
 
     #[test]
@@ -1243,9 +1238,8 @@ mod tests {
     #[test]
     fn publishing_changed_content_requires_a_new_pass() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let person = db.create_person("Alice").unwrap();
+        let person = db.create_person("Alice", Some("root")).unwrap();
         let key = db.add_key(person, KEY_1).unwrap();
-        db.add_binding(&binding(person)).unwrap();
         let first = db.published_test().unwrap().unwrap();
         db.record_attempt(&AttemptInput {
             person_id: person,
@@ -1278,25 +1272,45 @@ mod tests {
 
         let republished = db.publish_test(LEGACY_BANK_ID, &changed).unwrap();
         assert_eq!(second.revision, republished.revision);
+
+        let publications = db.list_publications(LEGACY_BANK_ID).unwrap();
+        assert_eq!(publications.len(), 2);
+        let original = publications
+            .iter()
+            .find(|publication| publication.revision == first.revision)
+            .unwrap();
+        assert!(!original.active);
+        let restored = db
+            .activate_publication(LEGACY_BANK_ID, original.publication_id)
+            .unwrap();
+        assert_eq!(restored.revision, first.revision);
+        assert!(
+            db.resolve_policy("root", &key.fingerprint)
+                .unwrap()
+                .unwrap()
+                .passed
+        );
     }
 
     #[test]
-    fn reenable_binding_revalidates_overlapping_key_scope() {
+    fn unassigned_account_fails_closed_and_can_be_reassigned() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let person = db.create_person("First").unwrap();
+        let person = db.create_person("First", Some("root")).unwrap();
         let key = db.add_key(person, KEY_1).unwrap();
-        let all_keys_id = db.add_binding(&binding(person)).unwrap();
-        db.set_binding_enabled(all_keys_id, false).unwrap();
-        db.add_binding(&BindingInput {
-            person_id: person,
-            ssh_key_id: Some(key.id),
-            unix_username: "root".to_owned(),
-        })
-        .unwrap();
-        assert!(matches!(
-            db.set_binding_enabled(all_keys_id, true),
-            Err(GateError::Conflict(_))
-        ));
+        assert!(db
+            .resolve_policy("root", &key.fingerprint)
+            .unwrap()
+            .is_some());
+        db.set_person_unix_username(person, None).unwrap();
+        assert!(db
+            .resolve_policy("root", &key.fingerprint)
+            .unwrap()
+            .is_none());
+        db.set_person_unix_username(person, Some("root")).unwrap();
+        assert!(db
+            .resolve_policy("root", &key.fingerprint)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -1323,18 +1337,18 @@ mod tests {
 
         db.initialize().unwrap();
         let view = db.list_people().unwrap().pop().unwrap();
-        assert_eq!(view.bindings[0].unix_username, "root");
+        assert_eq!(view.person.unix_username.as_deref(), Some("root"));
         let connection = db.open_read_only().unwrap();
         let versions: u32 = connection
             .query_row("SELECT count(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(versions, 4);
+        assert_eq!(versions, 5);
     }
 
     #[test]
-    fn migration_from_v2_preserves_distinct_mappings_and_deduplicates_modes() {
+    fn migration_from_v2_leaves_shared_unix_account_unassigned() {
         let directory = TempDir::new().unwrap();
         let db = Db::new(directory.path().join("gate.db"), Duration::from_secs(1));
         let connection = db.open_writable().unwrap();
@@ -1363,10 +1377,8 @@ mod tests {
         db.initialize().unwrap();
         let views = db.list_people().unwrap();
         assert_eq!(views.len(), 2);
-        assert_eq!(views[0].bindings.len(), 1);
-        assert!(views[0].bindings[0].enabled);
-        assert_eq!(views[1].bindings.len(), 1);
-        assert_eq!(views[1].bindings[0].unix_username, "root");
+        assert!(views[0].person.unix_username.is_none());
+        assert!(views[1].person.unix_username.is_none());
     }
 
     #[test]
@@ -1413,5 +1425,44 @@ mod tests {
             })
             .unwrap();
         assert!(legacy_pass.is_none());
+    }
+
+    #[test]
+    fn migration_from_v4_leaves_multiple_person_accounts_unassigned() {
+        let directory = TempDir::new().unwrap();
+        let db = Db::new(directory.path().join("gate.db"), Duration::from_secs(1));
+        let connection = db.open_writable().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+                 INSERT INTO schema_migrations(version) VALUES (1), (2), (3), (4);",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATION_1).unwrap();
+        connection.execute_batch(MIGRATION_2).unwrap();
+        connection.execute_batch(MIGRATION_3).unwrap();
+        connection.execute_batch(MIGRATION_4).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO persons(id, display_name, created_at)
+                     VALUES (1, 'Ambiguous', 1);
+                 INSERT INTO login_bindings(person_id, unix_username, enabled, created_at)
+                     VALUES (1, 'account-a', 1, 1), (1, 'account-b', 1, 2);",
+            )
+            .unwrap();
+        drop(connection);
+
+        db.initialize().unwrap();
+        let person = db.list_people().unwrap().pop().unwrap().person;
+        assert!(person.unix_username.is_none());
+        let connection = db.open_read_only().unwrap();
+        let old_table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'login_bindings')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!old_table_exists);
     }
 }

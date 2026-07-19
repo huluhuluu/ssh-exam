@@ -17,7 +17,7 @@
       "prompt": "Where should container port publication be configured?",
       "choices": [
         "In the container runtime or deployment configuration",
-        "In an Access mapping bank id",
+        "In a person's Unix account field",
         "In an SSH public-key comment"
       ],
       "correct_index": 0

@@ -26,9 +26,11 @@ Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或�
 
 - **首次登录 TUI 考试**：拦截指定的 OpenSSH 公钥登录。
 - **JSON 题库导入**：可分别维护宿主机、Docker、网络和通用知识题目。
-- **组合测试**：保存多个草稿，按顺序组合多个题库，并发布一个不可变的当前版本。
+- **组合测试**：保存和编辑多个草稿，配置题量及乱序规则，再发布不可变版本。
+- **发布历史**：查看并重新启用旧版本，不修改其题目和审计记录。
 - **中英双语**：Web 与 TUI 支持英文、中文和双语模式。
-- **公钥身份识别**：使用 Unix 账号 + SHA256 指纹；公钥注释和邮箱仅是标签。
+- **人员直接绑定账号**：每个人员最多拥有一个 Unix 账号，所有启用公钥继承该账号；
+  公钥注释和邮箱仅是标签。
 - **通过后恢复普通 SSH**：Shell、远程命令、VS Code 和转发继续由现有 `sshd`
   配置控制。
 - **回环管理界面**：Argon2id 密码、CSRF 防护、签名会话、题库原子写入。
@@ -48,20 +50,16 @@ flowchart LR
 ```
 
 OpenSSH 把 `%u`、`%f`、`%t`、`%k` 交给 `ssh-exam-key-policy`。策略程序依次
-核对 Unix 账号、公钥指纹、类型、内容、人员、访问映射和当前测试版本，全部匹配后
-才输出一行 authorized-keys 规则；任何异常都默认拒绝。
+核对 Unix 账号、公钥指纹、类型、内容、人员和当前测试版本，全部匹配后才输出一行
+authorized-keys 规则；任何异常都默认拒绝。
 
 待考试用户收到 `restrict,pty` 和强制执行的 `ssh-exam-tui` 命令；通过后策略只
 返回登记的公钥，不再附加强制命令或转发限制，连接由现有 `sshd` 配置正常处理。
 
 > [!WARNING]
-> 从 `v0.2.x` 升级时，原有“仅转发”映射会被有意转换为普通映射。这些用户将获得
-> Unix 账号和 `sshd` 所允许的 Shell、远程命令、SFTP、VS Code 和转发能力。
-> 部署 `v0.3.x` 前必须复核原有 ProxyJump 映射。
-
-> [!NOTE]
-> schema v4 不再让访问映射选择题库。所有受控人员统一执行当前发布的测试版本。
-> 发布内容发生变化后必须重新通过；重复发布相同内容会复用 revision，不会无故要求重考。
+> schema v5 已移除旧的逐密钥账号规则。升级时，仅当某个人员只有一个已启用旧账号，
+> 且该账号未被其他人员共用，系统才会自动绑定；歧义数据保持“未分配”并默认拒绝登录。
+> 升级前备份数据库，执行 `migrate` 后检查所有未分配人员，再重载 OpenSSH。
 
 ## 快速开始
 
@@ -70,7 +68,7 @@ OpenSSH 把 `%u`、`%f`、`%t`、`%k` 交给 `ssh-exam-key-policy`。策略程�
 预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
 
 ```sh
-VERSION=v0.4.0
+VERSION=v0.4.1
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -143,10 +141,11 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 1. 在“题库”中导入或检查 JSON 题库。
 2. 创建测试，按组合顺序填写题库 ID，然后发布。
 3. 创建人员并进入人员详情页。
-4. 登记一个或多个公钥，并映射到已有 Unix 账号。
+4. 为人员指定已有 Unix 账号，并登记一个或多个公钥。
 5. 需要增加尝试次数时，在详情页重置当前考试。
 
-创建人员或访问映射仍然不会自动启用 OpenSSH 拦截。
+创建人员和公钥本身不会启用拦截；该账号还必须命中提供的 OpenSSH
+`Match Group` 配置。
 
 ## 题库
 
@@ -166,14 +165,16 @@ Docker、创建容器或执行命令。
 
 ## 测试与发布
 
-测试包含稳定 ID、标题、有序题库 ID、通过分数和尝试次数。系统可以同时保存多个
-草稿。发布时会把所有题库解析成完整快照存入 SQLite，并根据测试身份、题库顺序、
-策略和题目计算 SHA-256 revision。
+测试包含稳定 ID、标题、有序题库 ID、通过分数、尝试次数、可选的每次考试题量，
+以及独立的题目/选项乱序开关。系统可以同时保存多个草稿，并在详情页修改。发布时
+会把所有题库解析成完整快照存入 SQLite，并根据测试身份、题库顺序、策略和题目
+计算 SHA-256 revision。
 
 - 编辑题库或草稿不会改变当前生效快照。
 - 发布变化后的内容会启用新 revision，并要求重新通过。
 - 重复发布等价内容会复用 revision。
 - 尝试和通过记录都绑定测试 ID + revision。
+- 发布历史不可变；重新启用旧版本时，该版本原有的通过资格会恢复。
 
 常用命令行操作：
 
@@ -183,9 +184,13 @@ ssh-exam-admin import-bank --config /etc/ssh-exam/config.json \
 ssh-exam-admin list-banks --config /etc/ssh-exam/config.json
 ssh-exam-admin create-test --config /etc/ssh-exam/config.json \
   --id onboarding --title 'Server onboarding' \
-  --banks host-ssh,docker-ssh --pass-threshold 80 --max-attempts 3
+  --banks host-ssh,docker-ssh --pass-threshold 80 --max-attempts 3 \
+  --question-limit 20 --shuffle-questions true --shuffle-choices true
 ssh-exam-admin list-tests --config /etc/ssh-exam/config.json
 ssh-exam-admin publish-test --config /etc/ssh-exam/config.json --id onboarding
+ssh-exam-admin list-publications --config /etc/ssh-exam/config.json --id onboarding
+ssh-exam-admin activate-publication --config /etc/ssh-exam/config.json \
+  --id onboarding --publication-id <PUBLICATION_ID>
 ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
 ```
 
@@ -249,7 +254,7 @@ sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
    `ssh-exam-gated`。
 2. 安装二进制、服务账号、配置、状态目录权限和检查后的 sudoers 规则。使用
    `visudo -cf deploy/sudoers.snippet` 校验。
-3. 通过管理端登记临时人员、公钥和访问映射，导入题库并发布临时测试。
+3. 通过管理端登记临时人员、其 Unix 账号和公钥，导入题库并发布临时测试。
 4. 使用生产应用配置完整执行一次隔离测试。
 5. 只把需要拦截的账号加入 `ssh-exam-gated`，再安装审核后的
    `deploy/sshd_config.snippet`。
@@ -286,12 +291,12 @@ ssh -p <SSH_PORT> -t person-account@bastion.example.org
 ## 安全模型
 
 - 身份由请求的 Unix 账号和公钥 SHA256 指纹确定，公钥注释/邮箱不参与识别。
-- 只有人员、公钥和访问映射都启用时，策略程序才输出授权规则。
+- 只有人员和公钥都启用，且请求的 Unix 账号与人员绑定账号完全一致时，策略程序
+  才输出授权规则。
 - 管理端仅监听回环地址，使用 Argon2id、登录失败限速、签名 HttpOnly Cookie、
   CSRF Token 和一次性签名提示。
-- 访问映射可以应用于人员的所有已登记密钥，也可以只应用于一个指定设备密钥。
 - 通过状态属于人员和不可变测试版本；只有该 revision 仍为当前版本时，该人员所有
-  已启用密钥和映射才继承通过状态。
+  已启用密钥才继承通过状态。
 - 必须保留不受门禁控制的恢复账号。策略默认拒绝，因此数据库路径或权限错误会让
   被门禁控制的公钥登录失败。
 
@@ -315,7 +320,7 @@ visudo -cf deploy/sudoers.snippet
 
 | 现象 | 检查内容 |
 |---|---|
-| 未考试就进入正常 Shell | 有效 `Match Group`、组成员、访问映射、人员通过状态、`%u/%f/%t/%k` 参数 |
+| 未考试就进入正常 Shell | 有效 `Match Group`、组成员、人员绑定的 Unix 账号、通过状态、`%u/%f/%t/%k` 参数 |
 | 公钥被拒绝 | 登记的指纹/密钥内容、启用状态、数据库权限和 SSH 日志中的默认拒绝错误 |
 | VS Code 不显示 TUI | 在真实终端中先执行一次 `ssh -t` |
 | 测试端口只能从 Docker 内访问 | 显式发布端口，或通过已有 SSH 连接转发 |

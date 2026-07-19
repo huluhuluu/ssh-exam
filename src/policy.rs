@@ -115,7 +115,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        db::{AttemptInput, BindingInput, KeyRecord},
+        db::{AttemptInput, KeyRecord},
         quiz::{Question, Quiz},
     };
 
@@ -147,6 +147,9 @@ mod tests {
             environment: Default::default(),
             pass_threshold_percent: 80,
             max_attempts: 3,
+            question_limit: None,
+            shuffle_questions: true,
+            shuffle_choices: true,
             questions: vec![Question {
                 prompt: "Ready?".to_owned(),
                 choices: vec!["Yes".to_owned(), "No".to_owned()],
@@ -154,14 +157,8 @@ mod tests {
             }],
         })
         .unwrap();
-        let person = db.create_person("Alice").unwrap();
+        let person = db.create_person("Alice", Some("root")).unwrap();
         let key = db.add_key(person, KEY).unwrap();
-        db.add_binding(&BindingInput {
-            person_id: person,
-            ssh_key_id: None,
-            unix_username: "root".to_owned(),
-        })
-        .unwrap();
         (directory, db, config, key, person)
     }
 
@@ -229,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn passed_mapping_has_no_forced_command_or_options() {
+    fn passed_identity_has_no_forced_command_or_options() {
         let (_directory, db, config, key, person) = setup();
         pass(&db, person);
         let decision = evaluate(

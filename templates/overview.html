@@ -12,19 +12,19 @@
     <div class="metric"><strong>{{ metrics.enabled_people }}</strong><span>{{ labels.enabled_people }}</span></div>
     <div class="metric"><strong>{{ metrics.passed_people }}</strong><span>{{ labels.passed }}</span></div>
     <div class="metric"><strong>{{ metrics.active_keys }}</strong><span>{{ labels.active_keys }}</span></div>
-    <div class="metric"><strong>{{ metrics.active_mappings }}</strong><span>{{ labels.active_mappings }}</span></div>
+    <div class="metric"><strong>{{ metrics.configured_accounts }}</strong><span>{{ labels.configured_accounts }}</span></div>
     <div class="metric"><strong>{{ metrics.attempts }}</strong><span>{{ labels.recorded_attempts }}</span></div>
   </div>
 </section>
 
 <section class="band" aria-labelledby="exam-summary-heading">
   <div class="section-head"><h2 id="exam-summary-heading">{{ labels.current_exam }}</h2><a class="text-action" href="/tests">{{ labels.manage_exam }}</a></div>
-  <div class="summary">
+  <div class="summary overview-summary">
     <div><span>{{ labels.title }}</span><strong>{{ quiz.title }}</strong></div>
     <div><span>{{ labels.environment }}</span><strong>{{ quiz.environment.as_str() }}</strong></div>
     <div><span>{{ labels.pass_threshold }}</span><strong>{{ quiz.pass_threshold_percent }}%</strong></div>
     <div><span>{{ labels.maximum_attempts }}</span><strong>{{ quiz.max_attempts }}</strong></div>
-    <div><span>{{ labels.questions }}</span><strong>{{ quiz.questions.len() }}</strong></div>
+    <div><span>{{ labels.questions }}</span><strong>{% if quiz.question_limit.is_some() %}{{ quiz.question_limit.unwrap() }} / {% endif %}{{ quiz.questions.len() }}</strong></div>
     <div><span>{{ labels.banks }}</span><strong>{{ bank_count }}</strong></div>
   </div>
 </section>

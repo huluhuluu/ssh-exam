@@ -28,11 +28,12 @@ use sha2::Sha256;
 use crate::{
     config::AdminAuthConfig,
     db::{
-        BindingInput, Db, GateError, KeyRecord, PersonRecord, PersonView, PublishedTest,
+        Db, GateError, KeyRecord, PersonRecord, PersonView, PublicationRecord, PublishedTest,
         TestDefinitionInput, TestDefinitionRecord,
     },
     quiz::{
-        validate_bank_id, BankEnvironment, Question, Quiz, QuizBank, QuizCatalog, LEGACY_BANK_ID,
+        validate_bank_id, BankEnvironment, CompositionOptions, Question, Quiz, QuizBank,
+        QuizCatalog, LEGACY_BANK_ID,
     },
 };
 
@@ -122,7 +123,7 @@ define_labels! {
     enabled_people => ("Enabled people", "已启用人员"),
     passed => ("Passed", "已通过"),
     active_keys => ("Active keys", "活跃密钥"),
-    active_mappings => ("Active mappings", "活跃映射"),
+    configured_accounts => ("Configured Unix accounts", "已配置 Unix 账号"),
     recorded_attempts => ("Recorded attempts", "已记录尝试"),
     current_exam => ("Current exam", "当前考试"),
     manage_exam => ("Manage exams", "管理考试"),
@@ -132,10 +133,10 @@ define_labels! {
     maximum_attempts => ("Maximum attempts", "最大尝试次数"),
     questions => ("Questions", "问题"),
     banks => ("Banks", "题库"),
-    access_model => ("Access model", "访问模型"),
+    access_model => ("Identity model", "身份模型"),
     manage_people => ("Manage people", "管理人员"),
-    access_help => ("An Access mapping connects a registered person or device key to an existing Unix account. The current published test controls qualification globally.", "访问映射将注册人员或设备密钥关联到现有 Unix 账号；当前发布测试统一控制考试资格。"),
-    people_help => ("Registered identities, device keys, inherited exam status, and Access mappings.", "注册身份、设备密钥、继承的考试状态与访问映射。"),
+    access_help => ("Each person owns one Unix login account. Every enabled key inherits that account and the current published test qualification.", "每个人员直接绑定一个 Unix 登录账号；其所有已启用公钥继承该账号和当前发布测试资格。"),
+    people_help => ("Registered identities, direct Unix accounts, device keys, and inherited exam status.", "注册身份、直接绑定的 Unix 账号、设备密钥与继承的考试状态。"),
     create_person => ("Create person", "创建人员"),
     create_person_help => ("Pass status belongs to the person and is inherited by every enabled registered key.", "通过状态属于人员，并由其所有已启用的注册密钥继承。"),
     display_name => ("Display name", "显示名称"),
@@ -146,7 +147,7 @@ define_labels! {
     exam_status => ("Exam status", "考试状态"),
     attempts => ("Attempts", "尝试次数"),
     device_keys => ("Device keys", "设备密钥"),
-    access_mappings => ("Access mappings", "访问映射"),
+    unix_account => ("Unix account", "Unix 账号"),
     enabled => ("Enabled", "已启用"),
     disabled => ("Disabled", "已禁用"),
     pending => ("Pending", "待考试"),
@@ -163,15 +164,12 @@ define_labels! {
     remove => ("Remove", "移除"),
     public_key => ("Public key", "公钥"),
     add_device_key => ("Add device key", "添加设备密钥"),
-    mapping_help => ("Map this person or one device key to an existing Unix login. After passing the current published test, OpenSSH handles the connection normally.", "将此人员或某个设备密钥映射到现有 Unix 登录账号；通过当前发布测试后由 OpenSSH 正常处理连接。"),
-    no_mappings => ("No Access mappings are configured for this person.", "此人员尚未配置访问映射。"),
+    unix_account_help => ("All enabled keys for this person authenticate only to this existing Unix account. Leave empty to deny SSH access.", "此人员的所有已启用公钥只能登录该已有 Unix 账号；留空将拒绝 SSH 访问。"),
+    save_account => ("Save Unix account", "保存 Unix 账号"),
+    unassigned => ("Unassigned", "未分配"),
     unix_login => ("Unix login account", "Unix 登录账号"),
-    scope => ("Scope", "范围"),
     action => ("Action", "操作"),
-    all_registered_keys => ("All registered keys", "所有注册密钥"),
-    selected_key => ("Selected key", "指定密钥"),
-    add_mapping => ("Add Access mapping", "添加访问映射"),
-    exam_help => ("Changes are written atomically and apply when the next TUI session starts.", "更改以原子方式写入，并在下一个 TUI 会话启动时生效。"),
+    exam_help => ("Saved changes do not alter the active immutable revision until you publish this test again.", "保存的修改不会改变当前生效的不可变版本；重新发布此测试后才会生效。"),
     configured_banks => ("Configured banks", "已配置题库"),
     legacy_bank => ("Legacy quiz_path", "兼容 quiz_path"),
     bank_id => ("Bank ID", "题库 ID"),
@@ -209,6 +207,16 @@ define_labels! {
     save_test => ("Save test", "保存测试"),
     current_revision => ("Current revision", "当前版本"),
     no_published_test => ("No test is published.", "当前没有已发布测试。"),
+    question_limit => ("Questions per attempt", "每次考试题数"),
+    question_limit_help => ("Leave empty to use every composed question.", "留空表示使用组合后的全部题目。"),
+    shuffle_questions => ("Shuffle questions", "随机题目顺序"),
+    shuffle_choices => ("Shuffle answer choices", "随机选项顺序"),
+    publication_history => ("Publication history", "发布历史"),
+    revision => ("Revision", "版本"),
+    published_at => ("Published at", "发布时间"),
+    activate => ("Activate", "重新启用"),
+    active => ("Active", "当前生效"),
+    historical => ("Historical", "历史版本"),
     import_help => ("Paste a complete question-bank JSON document. The server validates its schema and writes it atomically.", "粘贴完整题库 JSON 文档；服务器将校验格式并原子写入。"),
 }
 
@@ -364,6 +372,7 @@ struct TestTemplate {
     error: String,
     test: TestAdminView,
     bank_ids_text: String,
+    publications: Vec<PublicationAdminView>,
     labels: Labels,
     current_path: String,
 }
@@ -374,22 +383,14 @@ struct OverviewMetrics {
     enabled_people: usize,
     passed_people: usize,
     active_keys: usize,
-    active_mappings: usize,
+    configured_accounts: usize,
     attempts: u32,
 }
 
 struct PersonAdminView {
     person: PersonRecord,
     keys: Vec<KeyRecord>,
-    mappings: Vec<MappingAdminView>,
     attempt_count: u32,
-}
-
-struct MappingAdminView {
-    id: i64,
-    unix_username: String,
-    scope: String,
-    enabled: bool,
 }
 
 struct TestAdminView {
@@ -398,6 +399,14 @@ struct TestAdminView {
     question_count: usize,
     published: bool,
     revision: String,
+}
+
+struct PublicationAdminView {
+    publication_id: i64,
+    revision: String,
+    question_count: usize,
+    published_at: String,
+    active: bool,
 }
 
 struct QuestionAdminView {
@@ -444,6 +453,7 @@ struct CsrfForm {
 struct CreatePersonForm {
     csrf: String,
     display_name: String,
+    unix_username: String,
 }
 
 #[derive(Deserialize)]
@@ -459,10 +469,9 @@ struct AddKeyForm {
 }
 
 #[derive(Deserialize)]
-struct AddBindingForm {
+struct UnixAccountForm {
     csrf: String,
     unix_username: String,
-    ssh_key_id: String,
 }
 
 #[derive(Deserialize)]
@@ -480,6 +489,10 @@ struct TestForm {
     bank_ids: String,
     pass_threshold_percent: String,
     max_attempts: String,
+    #[serde(default)]
+    question_limit: String,
+    shuffle_questions: Option<String>,
+    shuffle_choices: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -542,21 +555,21 @@ pub fn router(state: WebState) -> Router {
         .route("/tests", get(tests_page).post(create_test))
         .route("/tests/:test_id", get(test_page).post(update_test))
         .route("/tests/:test_id/publish", post(publish_test))
+        .route(
+            "/tests/:test_id/publications/:publication_id/activate",
+            post(activate_publication),
+        )
         .route("/exam", get(legacy_exam_redirect))
         .route("/language/:language", get(select_language))
         .route("/login", get(login_page).post(login))
         .route("/logout", post(logout))
         .route("/persons", post(create_person))
+        .route("/persons/:id/unix-account", post(update_unix_account))
         .route("/persons/:id/enabled", post(toggle_person))
         .route("/persons/:id/reset", post(reset_exam))
         .route("/persons/:id/keys", post(add_key))
         .route("/people/:person_id/keys/:id/enabled", post(toggle_key))
         .route("/people/:person_id/keys/:id/remove", post(remove_key))
-        .route("/persons/:id/bindings", post(add_binding))
-        .route(
-            "/people/:person_id/bindings/:id/enabled",
-            post(toggle_binding),
-        )
         .route("/banks/:bank_id/settings", post(update_exam_settings))
         .route("/banks/:bank_id/questions", post(add_exam_question))
         .route(
@@ -891,7 +904,11 @@ async fn create_person(
     let Ok(_) = authorize_mutation(&state, &headers, &form.csrf) else {
         return mutation_rejection(&state, &headers);
     };
-    match state.db.create_person(&form.display_name) {
+    let unix_username = optional_text(&form.unix_username);
+    match state
+        .db
+        .create_person(&form.display_name, unix_username.as_deref())
+    {
         Ok(id) => flash_redirect(&state, &format!("/people/{id}"), "person-created"),
         Err(error) => {
             let language = language_from_headers(&headers);
@@ -928,6 +945,27 @@ async fn reset_exam(
     mutate_person(&state, &headers, &form.csrf, id, "exam-reset", || {
         state.db.reset_exam(id)
     })
+}
+
+async fn update_unix_account(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Form(form): Form<UnixAccountForm>,
+) -> Response {
+    let unix_username = optional_text(&form.unix_username);
+    mutate_person(
+        &state,
+        &headers,
+        &form.csrf,
+        id,
+        "unix-account-updated",
+        || {
+            state
+                .db
+                .set_person_unix_username(id, unix_username.as_deref())
+        },
+    )
 }
 
 async fn add_key(
@@ -991,60 +1029,6 @@ async fn remove_key(
                 return Err(GateError::NotFound);
             }
             state.db.remove_key(id)
-        },
-    )
-}
-
-async fn add_binding(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    AxumPath(id): AxumPath<i64>,
-    Form(form): Form<AddBindingForm>,
-) -> Response {
-    mutate_person(&state, &headers, &form.csrf, id, "mapping-added", || {
-        let ssh_key_id = if form.ssh_key_id.trim().is_empty() {
-            None
-        } else {
-            Some(
-                form.ssh_key_id
-                    .parse::<i64>()
-                    .map_err(|_| GateError::Invalid("invalid SSH key selection".to_owned()))?,
-            )
-        };
-        state
-            .db
-            .add_binding(&BindingInput {
-                person_id: id,
-                ssh_key_id,
-                unix_username: form.unix_username.clone(),
-            })
-            .map(|_| ())
-    })
-}
-
-async fn toggle_binding(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    AxumPath((person_id, id)): AxumPath<(i64, i64)>,
-    Form(form): Form<ToggleForm>,
-) -> Response {
-    mutate_person(
-        &state,
-        &headers,
-        &form.csrf,
-        person_id,
-        "mapping-updated",
-        || {
-            if !state
-                .db
-                .get_person(person_id)?
-                .bindings
-                .iter()
-                .any(|binding| binding.id == id)
-            {
-                return Err(GateError::NotFound);
-            }
-            state.db.set_binding_enabled(id, form.enabled)
         },
     )
 }
@@ -1205,8 +1189,13 @@ async fn mutate_test_definition(
         state.catalog.compose(
             input.title.clone(),
             &input.bank_ids,
-            input.pass_threshold_percent,
-            input.max_attempts,
+            CompositionOptions {
+                pass_threshold_percent: input.pass_threshold_percent,
+                max_attempts: input.max_attempts,
+                question_limit: input.question_limit,
+                shuffle_questions: input.shuffle_questions,
+                shuffle_choices: input.shuffle_choices,
+            },
         )?;
         match existing_id.as_deref() {
             Some(id) => state
@@ -1270,8 +1259,13 @@ async fn publish_test(
         let quiz = state.catalog.compose(
             test.title,
             &test.bank_ids,
-            test.pass_threshold_percent,
-            test.max_attempts,
+            CompositionOptions {
+                pass_threshold_percent: test.pass_threshold_percent,
+                max_attempts: test.max_attempts,
+                question_limit: test.question_limit,
+                shuffle_questions: test.shuffle_questions,
+                shuffle_choices: test.shuffle_choices,
+            },
         )?;
         Ok(state.db.publish_test(&test_id, &quiz)?)
     })();
@@ -1292,6 +1286,40 @@ async fn publish_test(
     }
 }
 
+async fn activate_publication(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath((test_id, publication_id)): AxumPath<(String, i64)>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    let language = language_from_headers(&headers);
+    match state.db.activate_publication(&test_id, publication_id) {
+        Ok(_) => flash_redirect(
+            &state,
+            &format!("/tests/{test_id}"),
+            "publication-activated",
+        ),
+        Err(error) => {
+            render_test(
+                &state,
+                &session,
+                language,
+                &test_id,
+                String::new(),
+                public_db_error(&error, language),
+                match error {
+                    GateError::NotFound => StatusCode::NOT_FOUND,
+                    _ => StatusCode::BAD_REQUEST,
+                },
+            )
+            .await
+        }
+    }
+}
+
 fn parse_test_form(form: &TestForm) -> Result<TestDefinitionInput> {
     let bank_ids = form
         .bank_ids
@@ -1301,6 +1329,13 @@ fn parse_test_form(form: &TestForm) -> Result<TestDefinitionInput> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect();
+    let question_limit = optional_text(&form.question_limit)
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .context("question limit must be a whole number")
+        })
+        .transpose()?;
     Ok(TestDefinitionInput {
         id: form.test_id.trim().to_owned(),
         title: form.title.trim().to_owned(),
@@ -1313,7 +1348,15 @@ fn parse_test_form(form: &TestForm) -> Result<TestDefinitionInput> {
             .max_attempts
             .parse()
             .context("maximum attempts must be a whole number")?,
+        question_limit,
+        shuffle_questions: form.shuffle_questions.is_some(),
+        shuffle_choices: form.shuffle_choices.is_some(),
     })
+}
+
+fn optional_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn mutate_person(
@@ -1539,10 +1582,7 @@ fn render_people(
                 active_page: "people",
                 notice,
                 error,
-                people: people
-                    .into_iter()
-                    .map(|item| person_admin_view(item, language))
-                    .collect(),
+                people: people.into_iter().map(person_admin_view).collect(),
                 labels: labels(language),
                 current_path: "/people",
             };
@@ -1573,7 +1613,7 @@ fn render_person(
                 active_page: "people",
                 notice,
                 error,
-                item: person_admin_view(item, language),
+                item: person_admin_view(item),
                 labels: labels(language),
                 current_path: format!("/people/{person_id}"),
             };
@@ -1755,6 +1795,20 @@ async fn render_test(
                 );
             };
             let bank_ids_text = test.test.bank_ids.join("\n");
+            let publications = match state.db.list_publications(test_id) {
+                Ok(publications) => publications
+                    .into_iter()
+                    .map(publication_admin_view)
+                    .collect(),
+                Err(_) => {
+                    return localized_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        language,
+                        "database error",
+                        "数据库错误",
+                    )
+                }
+            };
             let template = TestTemplate {
                 csrf: csrf_for_session(state, session),
                 active_page: "tests",
@@ -1762,6 +1816,7 @@ async fn render_test(
                 error,
                 test,
                 bank_ids_text,
+                publications,
                 labels: labels(language),
                 current_path: format!("/tests/{test_id}"),
             };
@@ -1773,6 +1828,19 @@ async fn render_test(
             "database error",
             "数据库错误",
         ),
+    }
+}
+
+fn publication_admin_view(publication: PublicationRecord) -> PublicationAdminView {
+    PublicationAdminView {
+        publication_id: publication.publication_id,
+        revision: publication.revision,
+        question_count: publication
+            .quiz
+            .question_limit
+            .unwrap_or(publication.quiz.questions.len() as u32) as usize,
+        published_at: publication.published_at,
+        active: publication.active,
     }
 }
 
@@ -1828,52 +1896,18 @@ fn overview_metrics(people: &[PersonView]) -> OverviewMetrics {
             .flat_map(|item| &item.keys)
             .filter(|key| key.enabled)
             .count(),
-        active_mappings: people
+        configured_accounts: people
             .iter()
-            .flat_map(|item| &item.bindings)
-            .filter(|binding| binding.enabled)
+            .filter(|item| item.person.unix_username.is_some())
             .count(),
         attempts: people.iter().map(|item| item.attempt_count).sum(),
     }
 }
 
-fn person_admin_view(item: PersonView, language: WebLanguage) -> PersonAdminView {
-    let mappings = item
-        .bindings
-        .into_iter()
-        .map(|binding| {
-            let scope = match binding.ssh_key_id {
-                Some(key_id) => item
-                    .keys
-                    .iter()
-                    .find(|key| key.id == key_id)
-                    .map(|key| {
-                        format!(
-                            "{}: {}",
-                            language.text("Selected device key", "指定设备密钥"),
-                            key.fingerprint
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        format!(
-                            "{} #{key_id}",
-                            language.text("Selected device key", "指定设备密钥")
-                        )
-                    }),
-                None => language.text("All registered keys", "所有注册密钥"),
-            };
-            MappingAdminView {
-                id: binding.id,
-                unix_username: binding.unix_username,
-                scope,
-                enabled: binding.enabled,
-            }
-        })
-        .collect();
+fn person_admin_view(item: PersonView) -> PersonAdminView {
     PersonAdminView {
         person: item.person,
         keys: item.keys,
-        mappings,
         attempt_count: item.attempt_count,
     }
 }
@@ -2099,10 +2133,7 @@ fn flash_message(state: &WebState, headers: &HeaderMap, language: WebLanguage) -
         "key-added" => language.text("Device key added.", "设备密钥已添加。"),
         "key-updated" => language.text("Device key status updated.", "设备密钥状态已更新。"),
         "key-removed" => language.text("Device key removed.", "设备密钥已移除。"),
-        "mapping-added" => language.text("Access mapping added.", "访问映射已添加。"),
-        "mapping-updated" => {
-            language.text("Access mapping status updated.", "访问映射状态已更新。")
-        }
+        "unix-account-updated" => language.text("Unix account saved.", "Unix 账号已保存。"),
         "bank-created" => language.text("Quiz bank created.", "题库已创建。"),
         "bank-imported" => language.text("Question bank imported.", "题库已导入。"),
         "settings-updated" => language.text("Exam settings saved.", "考试设置已保存。"),
@@ -2115,6 +2146,9 @@ fn flash_message(state: &WebState, headers: &HeaderMap, language: WebLanguage) -
             "Test published. Users must pass this revision before normal SSH access.",
             "测试已发布；用户必须通过此版本后才能正常使用 SSH。",
         ),
+        "publication-activated" => {
+            language.text("Published revision activated.", "已重新启用该发布版本。")
+        }
         _ => String::new(),
     }
 }
@@ -2184,6 +2218,9 @@ mod tests {
             environment: crate::quiz::BankEnvironment::General,
             pass_threshold_percent: 80,
             max_attempts: 3,
+            question_limit: None,
+            shuffle_questions: true,
+            shuffle_choices: true,
             questions: vec![Question {
                 prompt: "Safe?".to_owned(),
                 choices: vec!["Yes".to_owned(), "No".to_owned()],
@@ -2358,7 +2395,7 @@ mod tests {
             &harness.app,
             "/persons",
             &session,
-            &format!("csrf={csrf}&display_name=Alice"),
+            &format!("csrf={csrf}&display_name=Alice&unix_username=root"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -2382,18 +2419,22 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let response = form_post(
             &harness.app,
-            &format!("/persons/{person_id}/bindings"),
+            &format!("/persons/{person_id}/unix-account"),
             &session,
-            &format!("csrf={csrf}&unix_username=Invalid%21&ssh_key_id="),
+            &format!("csrf={csrf}&unix_username=Invalid%21"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn people_mutations_disable_bind_reset_and_remove() {
+    async fn people_mutations_disable_update_account_reset_and_remove() {
         let harness = harness();
-        let person_id = harness.state.db.create_person("Mutation Test").unwrap();
+        let person_id = harness
+            .state
+            .db
+            .create_person("Mutation Test", Some("root"))
+            .unwrap();
         let key = harness
             .state
             .db
@@ -2426,8 +2467,8 @@ mod tests {
                 format!("csrf={csrf}&enabled=true"),
             ),
             (
-                format!("/persons/{person_id}/bindings"),
-                format!("csrf={csrf}&unix_username=root&ssh_key_id="),
+                format!("/persons/{person_id}/unix-account"),
+                format!("csrf={csrf}&unix_username=root"),
             ),
         ] {
             assert_eq!(
@@ -2437,12 +2478,7 @@ mod tests {
                 StatusCode::SEE_OTHER
             );
         }
-        let binding_id = harness.state.db.list_people().unwrap()[0].bindings[0].id;
         for (path, body) in [
-            (
-                format!("/people/{person_id}/bindings/{binding_id}/enabled"),
-                format!("csrf={csrf}&enabled=false"),
-            ),
             (
                 format!("/people/{person_id}/keys/{}/enabled", key.id),
                 format!("csrf={csrf}&enabled=false"),
@@ -2633,26 +2669,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn access_mapping_is_independent_from_question_banks() {
+    async fn direct_account_is_independent_from_question_banks() {
         let harness = harness();
         harness
             .state
             .catalog
             .create("host-ssh", &sample_quiz())
             .unwrap();
-        let person_id = harness.state.db.create_person("Bank Test").unwrap();
+        let person_id = harness.state.db.create_person("Bank Test", None).unwrap();
         let (session, csrf) = login(&harness.app).await;
         let response = form_post(
             &harness.app,
-            &format!("/persons/{person_id}/bindings"),
+            &format!("/persons/{person_id}/unix-account"),
             &session,
-            &format!("csrf={csrf}&unix_username=root&ssh_key_id="),
+            &format!("csrf={csrf}&unix_username=root"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            harness.state.db.list_people().unwrap()[0].bindings[0].unix_username,
-            "root"
+            harness.state.db.list_people().unwrap()[0]
+                .person
+                .unix_username
+                .as_deref(),
+            Some("root")
         );
     }
 
@@ -2669,7 +2708,7 @@ mod tests {
             &harness.app,
             "/tests",
             &session,
-            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding&bank_ids=legacy%0Ahost-ssh&pass_threshold_percent=80&max_attempts=3"),
+            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding&bank_ids=legacy%0Ahost-ssh&pass_threshold_percent=80&max_attempts=3&question_limit=1&shuffle_questions=on&shuffle_choices=on"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -2685,6 +2724,56 @@ mod tests {
         let published = harness.state.db.published_test().unwrap().unwrap();
         assert_eq!(published.test_id, "onboarding");
         assert_eq!(published.quiz.questions.len(), 2);
+        assert_eq!(published.quiz.question_limit, Some(1));
+
+        let response = form_post(
+            &harness.app,
+            "/tests/onboarding",
+            &session,
+            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding+v2&bank_ids=legacy%0Ahost-ssh&pass_threshold_percent=90&max_attempts=4&question_limit=2&shuffle_questions=on"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let saved = harness.state.db.get_test("onboarding").unwrap();
+        assert_eq!(saved.title, "Onboarding v2");
+        assert_eq!(saved.question_limit, Some(2));
+        assert!(saved.shuffle_questions);
+        assert!(!saved.shuffle_choices);
+        let response = form_post(
+            &harness.app,
+            "/tests/onboarding/publish",
+            &session,
+            &format!("csrf={csrf}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let current = harness.state.db.published_test().unwrap().unwrap();
+        assert_ne!(current.revision, published.revision);
+        assert_eq!(
+            harness
+                .state
+                .db
+                .list_publications("onboarding")
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let response = form_post(
+            &harness.app,
+            &format!(
+                "/tests/onboarding/publications/{}/activate",
+                published.publication_id
+            ),
+            &session,
+            &format!("csrf={csrf}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            harness.state.db.published_test().unwrap().unwrap().revision,
+            published.revision
+        );
     }
 
     #[tokio::test]
@@ -2695,7 +2784,7 @@ mod tests {
             &harness.app,
             "/persons",
             &session,
-            &format!("csrf={csrf}&display_name=Flash+Test"),
+            &format!("csrf={csrf}&display_name=Flash+Test&unix_username=root"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
