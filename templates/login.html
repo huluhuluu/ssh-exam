@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="{{ labels.html_lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ labels.sign_in }} - SSH Exam Gate</title>
+  <style>
+    :root { color-scheme:light; font-family:system-ui,sans-serif; background:#f3f5f3; color:#202522; }
+    * { box-sizing:border-box; }
+    body { min-width:280px; min-height:100vh; margin:0; display:grid; place-items:center; padding:18px; }
+    main { width:min(100%,390px); padding:24px; background:#fff; border:1px solid #cdd3ce; border-top:4px solid #2d704c; border-radius:4px; }
+    h1 { margin:0; font-size:21px; letter-spacing:0; }
+    p { margin:6px 0 20px; color:#626b65; font-size:13px; }
+    .language { display:flex; gap:12px; margin:0 0 18px; font-size:13px; }
+    .error { min-height:20px; margin:0 0 8px; color:#922323; }
+    label { display:block; margin-bottom:6px; font-size:13px; font-weight:650; }
+    input { width:100%; padding:9px; border:1px solid #969f98; border-radius:3px; font:inherit; letter-spacing:0; }
+    input:focus { outline:2px solid #72a98a; outline-offset:1px; }
+    button { width:100%; min-height:38px; margin-top:15px; padding:7px 10px; border:1px solid #286b48; border-radius:3px; background:#286b48; color:#fff; font:inherit; font-weight:650; cursor:pointer; letter-spacing:0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SSH Exam Gate</h1>
+    <p>{{ labels.administration }}</p>
+    <div class="language" aria-label="{{ labels.language }}">
+      <a href="/language/en?next={{ current_path }}">English</a>
+      <a href="/language/zh?next={{ current_path }}">中文</a>
+      <a href="/language/bilingual?next={{ current_path }}">EN/中</a>
+    </div>
+    <div class="error" role="alert">{{ error }}</div>
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="password">{{ labels.admin_password }}</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button type="submit">{{ labels.sign_in }}</button>
+    </form>
+  </main>
+</body>
+</html>

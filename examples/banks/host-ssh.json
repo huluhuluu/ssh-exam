@@ -1,0 +1,26 @@
+{
+  "title": "Host SSH Fundamentals",
+  "environment": "host",
+  "pass_threshold_percent": 80,
+  "max_attempts": 3,
+  "questions": [
+    {
+      "prompt": "What should be checked before reloading an OpenSSH configuration?",
+      "choices": [
+        "Validate the complete configuration with sshd -t",
+        "Delete all existing authorized_keys files",
+        "Disable every recovery account"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "What identifies the public key presented to this gate?",
+      "choices": [
+        "Its SHA256 public-key fingerprint",
+        "Its optional comment",
+        "The terminal window title"
+      ],
+      "correct_index": 0
+    }
+  ]
+}

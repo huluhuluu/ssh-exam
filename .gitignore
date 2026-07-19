@@ -1,0 +1,16 @@
+/target/
+/dist/*
+!/dist/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+.env
+config.local.json
+findings.md
+progress.md
+task_plan.md
+AGENTS.md
+

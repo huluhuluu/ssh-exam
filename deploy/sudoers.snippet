@@ -1,0 +1,12 @@
+# Validate with visudo -cf before installing. The wildcard arguments are safe
+# only because ssh-exam-tui revalidates SUDO_USER, username, fingerprint, enabled
+# key, enabled binding, selected bank, and language before it can write an exam
+# attempt.
+Cmnd_Alias SSH_EXAM_TUI = /usr/local/libexec/ssh-exam-tui --config /etc/ssh-exam/config.json --username * --fingerprint SHA256\:* --bank * --language *
+
+Defaults!SSH_EXAM_TUI env_reset
+Defaults!SSH_EXAM_TUI !set_home
+Defaults!SSH_EXAM_TUI secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin
+Defaults!SSH_EXAM_TUI env_keep += "TERM COLORTERM"
+
+%ssh-exam-gated ALL=(ssh-exam-tui) NOPASSWD:NOEXEC: SSH_EXAM_TUI

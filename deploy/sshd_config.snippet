@@ -1,0 +1,18 @@
+# Accounts subject to the exam gate must be members of ssh-exam-gated.
+# Keep at least one tested recovery administrator outside that group; it retains
+# the host's normal AuthorizedKeysFile behavior and is the explicit bypass.
+# OpenSSH supplies %u (login), %f (SHA256 fingerprint), %t (key type), and %k
+# (base64 key blob). The helper validates all four and emits a forced command
+# while the selected Access mapping is pending.
+Match Group ssh-exam-gated
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthenticationMethods publickey
+    AuthorizedKeysFile none
+    AuthorizedKeysCommand /usr/local/libexec/ssh-exam-key-policy --config /etc/ssh-exam/config.json --username %u --fingerprint %f --key-type %t --key-base64 %k
+    AuthorizedKeysCommandUser ssh-exam-key
+    PermitTTY yes
+    AllowTcpForwarding yes
+    PermitTunnel no
+    X11Forwarding no

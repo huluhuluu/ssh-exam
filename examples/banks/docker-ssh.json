@@ -1,0 +1,26 @@
+{
+  "title": "Docker SSH Boundaries",
+  "environment": "docker",
+  "pass_threshold_percent": 80,
+  "max_attempts": 3,
+  "questions": [
+    {
+      "prompt": "What does Docker environment metadata make this gate do?",
+      "choices": [
+        "Select educational questions only",
+        "Mount the Docker socket",
+        "Create and start containers"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "Where should container port publication be configured?",
+      "choices": [
+        "In the container runtime or deployment configuration",
+        "In an Access mapping bank id",
+        "In an SSH public-key comment"
+      ],
+      "correct_index": 0
+    }
+  ]
+}

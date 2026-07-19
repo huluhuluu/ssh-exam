@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86-64:
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Build locked release binaries
+        run: cargo +stable build --release --locked --target x86_64-unknown-linux-gnu --bins
+      - name: Package Linux x86_64 archive
+        run: |
+          ./scripts/package-release.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --binary-dir "${CARGO_TARGET_DIR}/x86_64-unknown-linux-gnu/release" \
+            --output-dir "${RUNNER_TEMP}/ssh-exam-release"
+      - name: Upload GitHub Release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ runner.temp }}/ssh-exam-release/ssh-exam-${{ github.ref_name }}-linux-x86_64.tar.gz
+            ${{ runner.temp }}/ssh-exam-release/SHA256SUMS

@@ -1,0 +1,26 @@
+{
+  "title": "Network Topology Basics",
+  "environment": "network",
+  "pass_threshold_percent": 80,
+  "max_attempts": 3,
+  "questions": [
+    {
+      "prompt": "What does an Access mapping allowed destination control?",
+      "choices": [
+        "The exact forwarding target for Shared ProxyJump access",
+        "The bastion SSH listener port",
+        "The admin Web listener"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "Why should a forwarding destination use an explicit host and port?",
+      "choices": [
+        "It limits forwarding to reviewed endpoints",
+        "It enables unrestricted shell access",
+        "It changes the server host key"
+      ],
+      "correct_index": 0
+    }
+  ]
+}

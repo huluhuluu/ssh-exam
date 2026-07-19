@@ -1,0 +1,5 @@
+{
+  "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$c2FtcGxlLXNhbHQtMTIzNA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "session_secret_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "session_ttl_seconds": 28800
+}

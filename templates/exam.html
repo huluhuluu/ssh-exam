@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ labels.exam }} - SSH Exam Gate{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ labels.exam }}</h1><p>{{ labels.exam_help }}</p></div>
+</div>
+{% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="band" aria-labelledby="banks-heading">
+  <div class="section-head"><h2 id="banks-heading">{{ labels.configured_banks }}</h2><span class="muted">{{ banks.len() }} {{ labels.total }}</span></div>
+  <p class="help">{{ labels.educational_only }}</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>{{ labels.bank_id }}</th><th>{{ labels.title }}</th><th>{{ labels.environment }}</th><th>{{ labels.questions }}</th><th>{{ labels.action }}</th></tr></thead>
+      <tbody>
+      {% for bank in banks %}
+        <tr>
+          <td><code>{{ bank.id }}</code>{% if bank.legacy %}<br><span class="muted">{{ labels.legacy_bank }}</span>{% endif %}</td>
+          <td>{{ bank.title }}</td><td>{{ bank.environment }}</td>
+          <td>{{ bank.question_count }}</td>
+          <td>{% if bank.selected %}<span class="status good">{{ labels.selected }}</span>{% else %}<a href="/exam/{{ bank.id }}">{{ labels.select }}</a>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="band" aria-labelledby="create-bank-heading">
+  <h2 id="create-bank-heading">{{ labels.create_bank }}</h2>
+  {% if catalog_enabled %}
+  <form class="form-grid" method="post" action="/exam/banks" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div><label for="new-bank-id">{{ labels.bank_id }}</label><input id="new-bank-id" name="bank_id" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" required><p class="help">{{ labels.bank_id_help }}</p></div>
+    <div><label for="new-bank-title">{{ labels.title }}</label><input id="new-bank-title" name="title" maxlength="200" required></div>
+    <div><label for="new-bank-environment">{{ labels.environment }}</label><select id="new-bank-environment" name="environment"><option value="general">general</option><option value="host">host</option><option value="docker">docker</option><option value="network">network</option></select></div>
+    <div><label for="new-bank-threshold">{{ labels.pass_threshold }} (%)</label><input id="new-bank-threshold" name="pass_threshold_percent" type="number" min="1" max="100" value="80" required></div>
+    <div><label for="new-bank-attempts">{{ labels.maximum_attempts }}</label><input id="new-bank-attempts" name="max_attempts" type="number" min="1" max="100" value="3" required></div>
+    <div class="wide"><label for="new-bank-prompt">{{ labels.initial_question }}</label><textarea id="new-bank-prompt" name="prompt" maxlength="2000" required></textarea></div>
+    <div class="wide"><label for="new-bank-choices">{{ labels.choices }}</label><textarea id="new-bank-choices" name="choices" maxlength="10020" required></textarea><p class="help">{{ labels.choices_help }}</p></div>
+    <div><label for="new-bank-answer">{{ labels.correct_answer }}</label><select id="new-bank-answer" name="correct_index">{% for option in answer_options %}<option value="{{ option.index }}">{{ labels.choice }} {{ option.number }}</option>{% endfor %}</select></div>
+    <div style="align-self:end"><button class="primary" type="submit">{{ labels.create_bank }}</button></div>
+  </form>
+  {% else %}
+    <div class="empty">{{ labels.catalog_disabled }}</div>
+  {% endif %}
+</section>
+
+<section class="band" aria-labelledby="settings-heading">
+  <h2 id="settings-heading">{{ labels.settings }}: <code>{{ bank_id }}</code></h2>
+  <form class="form-grid" method="post" action="/exam/{{ bank_id }}/settings" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="wide"><label for="exam-title">{{ labels.title }}</label><input id="exam-title" name="title" maxlength="200" value="{{ quiz.title }}" required></div>
+    <div><label for="environment">{{ labels.environment }}</label><select id="environment" name="environment"><option value="general"{% if environment == "general" %} selected{% endif %}>general</option><option value="host"{% if environment == "host" %} selected{% endif %}>host</option><option value="docker"{% if environment == "docker" %} selected{% endif %}>docker</option><option value="network"{% if environment == "network" %} selected{% endif %}>network</option></select></div>
+    <div><label for="threshold">{{ labels.pass_threshold }} (%)</label><input id="threshold" name="pass_threshold_percent" type="number" min="1" max="100" value="{{ quiz.pass_threshold_percent }}" required></div>
+    <div><label for="attempts">{{ labels.maximum_attempts }}</label><input id="attempts" name="max_attempts" type="number" min="1" max="100" value="{{ quiz.max_attempts }}" required></div>
+    <div style="align-self:end"><button class="primary" type="submit">{{ labels.save_settings }}</button></div>
+  </form>
+</section>
+
+<section class="band" aria-labelledby="questions-heading">
+  <div class="section-head"><h2 id="questions-heading">{{ labels.questions }}</h2><span class="muted">{{ questions.len() }} {{ labels.total }}</span></div>
+  {% for question in questions %}
+  <article class="question">
+    <div class="question-head"><h3>{{ labels.question }} {{ question.number }}</h3><span class="muted">{{ labels.answer }} {{ question.correct_index + 1 }}</span></div>
+    <form class="form-grid" method="post" action="/exam/{{ bank_id }}/questions/{{ question.index }}/edit">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="wide"><label for="prompt-{{ question.index }}">{{ labels.prompt }}</label><textarea id="prompt-{{ question.index }}" name="prompt" maxlength="2000" required>{{ question.prompt }}</textarea></div>
+      <div class="wide"><label for="choices-{{ question.index }}">{{ labels.choices }}</label><textarea id="choices-{{ question.index }}" name="choices" maxlength="10020" required>{{ question.choices_text }}</textarea><p class="help">{{ labels.choices_help }}</p></div>
+      <div><label for="answer-{{ question.index }}">{{ labels.correct_answer }}</label><select id="answer-{{ question.index }}" name="correct_index">{% for option in question.answer_options %}<option value="{{ option.index }}"{% if option.index == question.correct_index %} selected{% endif %}>{{ labels.choice }} {{ option.number }}</option>{% endfor %}</select></div>
+      <div style="align-self:end"><button class="primary" type="submit">{{ labels.save_question }}</button></div>
+    </form>
+    <div class="question-actions">
+      <span class="help">{{ labels.delete_question_help }}</span>
+      <form method="post" action="/exam/{{ bank_id }}/questions/{{ question.index }}/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit"{% if questions.len() == 1 %} disabled title="{{ labels.keep_one_question }}"{% endif %}>{{ labels.delete_question }}</button></form>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+
+<section class="band" aria-labelledby="add-question-heading">
+  <h2 id="add-question-heading">{{ labels.add_question }}</h2>
+  <form class="form-grid" method="post" action="/exam/{{ bank_id }}/questions" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="wide"><label for="new-prompt">{{ labels.prompt }}</label><textarea id="new-prompt" name="prompt" maxlength="2000" required></textarea></div>
+    <div class="wide"><label for="new-choices">{{ labels.choices }}</label><textarea id="new-choices" name="choices" maxlength="10020" required></textarea><p class="help">{{ labels.choices_help }}</p></div>
+    <div><label for="new-answer">{{ labels.correct_answer }}</label><select id="new-answer" name="correct_index">{% for option in answer_options %}<option value="{{ option.index }}">{{ labels.choice }} {{ option.number }}</option>{% endfor %}</select></div>
+    <div style="align-self:end"><button class="primary" type="submit">{{ labels.add_question }}</button></div>
+  </form>
+</section>
+{% endblock %}

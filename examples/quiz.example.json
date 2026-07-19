@@ -1,0 +1,53 @@
+{
+  "title": "SSH Access Safety Exam",
+  "environment": "general",
+  "pass_threshold_percent": 80,
+  "max_attempts": 3,
+  "questions": [
+    {
+      "prompt": "Which value identifies a registered SSH key for authorization?",
+      "choices": [
+        "Its SHA256 public-key fingerprint",
+        "The email in its comment",
+        "The device hostname"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "What should you do if a private SSH key may have been exposed?",
+      "choices": [
+        "Remove or disable the registered key and replace it",
+        "Change only the public-key comment",
+        "Keep using it until the next scheduled review"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "Which action is appropriate on a shared proxyjump account?",
+      "choices": [
+        "Use it only for approved forwarding destinations",
+        "Start a local bastion shell",
+        "Upload files over SFTP"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "Why should host-key warnings be investigated?",
+      "choices": [
+        "They can indicate the remote host identity changed",
+        "They mean the public-key comment expired",
+        "They only affect terminal colors"
+      ],
+      "correct_index": 0
+    },
+    {
+      "prompt": "Where should a private SSH key be stored?",
+      "choices": [
+        "On an authorized device with restrictive local permissions",
+        "In a shared chat message",
+        "In the public authorized_keys file"
+      ],
+      "correct_index": 0
+    }
+  ]
+}

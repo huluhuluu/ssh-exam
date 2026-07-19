@@ -1,0 +1,24 @@
+[Unit]
+Description=SSH Exam Gate loopback admin server
+After=local-fs.target
+
+[Service]
+Type=simple
+User=ssh-exam-admin
+Group=ssh-exam-db
+UMask=0007
+ExecStart=/usr/local/sbin/ssh-exam-admin serve --config /etc/ssh-exam/config.json
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/ssh-exam
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
