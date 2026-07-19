@@ -230,6 +230,18 @@ define_labels! {
     active => ("Active", "当前生效"),
     historical => ("Historical", "历史版本"),
     import_help => ("Paste a complete question-bank JSON document. The server validates its schema and writes it atomically.", "粘贴完整题库 JSON 文档；服务器将校验格式并原子写入。"),
+    search => ("Search", "搜索"),
+    search_placeholder => ("Name, ID, account, or title", "名称、ID、账号或标题"),
+    filter => ("Filter", "筛选"),
+    all_statuses => ("All statuses", "全部状态"),
+    all_environments => ("All environments", "全部环境"),
+    clear_filters => ("Clear filters", "清除筛选"),
+    no_matching_people => ("No people match these filters.", "没有人员符合当前筛选条件。"),
+    no_matching_banks => ("No question banks match these filters.", "没有题库符合当前筛选条件。"),
+    no_matching_tests => ("No tests match these filters.", "没有测试符合当前筛选条件。"),
+    selected_banks => ("Selected banks", "已选题库"),
+    selected_questions => ("Selected questions", "已选题目"),
+    choose_banks_help => ("Select banks below, then save to update this composition.", "选择下方题库后保存以更新组合。"),
 }
 
 #[derive(Clone)]
@@ -317,6 +329,10 @@ struct PeopleTemplate {
     notice: String,
     error: String,
     people: Vec<PersonAdminView>,
+    total_people: usize,
+    search: String,
+    status_filter: String,
+    has_filters: bool,
     labels: Labels,
     current_path: &'static str,
 }
@@ -341,6 +357,10 @@ struct BanksTemplate {
     notice: String,
     error: String,
     banks: Vec<BankOption>,
+    total_banks: usize,
+    search: String,
+    environment_filter: String,
+    has_filters: bool,
     catalog_enabled: bool,
     labels: Labels,
     current_path: &'static str,
@@ -372,6 +392,10 @@ struct TestsTemplate {
     notice: String,
     error: String,
     tests: Vec<TestAdminView>,
+    total_tests: usize,
+    search: String,
+    status_filter: String,
+    has_filters: bool,
     banks: Vec<BankOption>,
     labels: Labels,
     current_path: &'static str,
@@ -387,6 +411,8 @@ struct TestTemplate {
     test: TestAdminView,
     banks: Vec<BankOption>,
     publications: Vec<PublicationAdminView>,
+    selected_bank_count: usize,
+    selected_question_count: usize,
     labels: Labels,
     current_path: String,
 }
@@ -452,6 +478,24 @@ struct BankOption {
 #[derive(Default, Deserialize)]
 struct LanguageQuery {
     next: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct PeopleQuery {
+    q: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct BanksQuery {
+    q: Option<String>,
+    environment: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct TestsQuery {
+    q: Option<String>,
+    status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -725,7 +769,11 @@ async fn overview(State(state): State<WebState>, headers: HeaderMap) -> Response
     response
 }
 
-async fn people_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+async fn people_page(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<PeopleQuery>,
+) -> Response {
     let Some(session) = session_from_headers(&state, &headers) else {
         return Redirect::to("/login").into_response();
     };
@@ -738,6 +786,7 @@ async fn people_page(State(state): State<WebState>, headers: HeaderMap) -> Respo
         notice,
         String::new(),
         StatusCode::OK,
+        query,
     );
     clear_flash(&mut response);
     response
@@ -766,7 +815,11 @@ async fn person_page(
     response
 }
 
-async fn banks_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+async fn banks_page(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<BanksQuery>,
+) -> Response {
     let Some(session) = session_from_headers(&state, &headers) else {
         return Redirect::to("/login").into_response();
     };
@@ -779,6 +832,7 @@ async fn banks_page(State(state): State<WebState>, headers: HeaderMap) -> Respon
         notice,
         String::new(),
         StatusCode::OK,
+        query,
     )
     .await;
     clear_flash(&mut response);
@@ -849,7 +903,11 @@ async fn export_bank(
     }
 }
 
-async fn tests_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+async fn tests_page(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<TestsQuery>,
+) -> Response {
     let Some(session) = session_from_headers(&state, &headers) else {
         return Redirect::to("/login").into_response();
     };
@@ -862,6 +920,7 @@ async fn tests_page(State(state): State<WebState>, headers: HeaderMap) -> Respon
         notice,
         String::new(),
         StatusCode::OK,
+        query,
     )
     .await;
     clear_flash(&mut response);
@@ -956,6 +1015,7 @@ async fn create_person(
                 String::new(),
                 public_db_error(&error, language),
                 StatusCode::BAD_REQUEST,
+                PeopleQuery::default(),
             )
         }
     }
@@ -1243,6 +1303,7 @@ async fn import_bank(
                 String::new(),
                 localized_error(language, &error.to_string()),
                 StatusCode::BAD_REQUEST,
+                BanksQuery::default(),
             )
             .await
         }
@@ -1448,6 +1509,7 @@ async fn mutate_test_definition(
                     String::new(),
                     localized_error(language, &error.to_string()),
                     StatusCode::BAD_REQUEST,
+                    TestsQuery::default(),
                 )
                 .await
             }
@@ -1740,6 +1802,19 @@ fn render_login(state: &WebState, language: WebLanguage, error: String) -> Respo
     response
 }
 
+fn normalized_filter(value: Option<String>) -> String {
+    value.unwrap_or_default().trim().chars().take(200).collect()
+}
+
+fn allowed_filter(value: Option<String>, allowed: &[&str]) -> String {
+    let value = normalized_filter(value).to_lowercase();
+    if allowed.contains(&value.as_str()) {
+        value
+    } else {
+        String::new()
+    }
+}
+
 async fn render_overview(
     state: &WebState,
     session: &Session,
@@ -1805,15 +1880,50 @@ fn render_people(
     notice: String,
     error: String,
     status: StatusCode,
+    query: PeopleQuery,
 ) -> Response {
     match state.db.list_people() {
         Ok(people) => {
+            let mut people = people
+                .into_iter()
+                .map(person_admin_view)
+                .collect::<Vec<_>>();
+            let total_people = people.len();
+            let search = normalized_filter(query.q);
+            let status_filter = allowed_filter(
+                query.status,
+                &["enabled", "disabled", "passed", "pending", "unassigned"],
+            );
+            let needle = search.to_lowercase();
+            people.retain(|item| {
+                let matches_text = needle.is_empty()
+                    || item.person.display_name.to_lowercase().contains(&needle)
+                    || item
+                        .person
+                        .unix_username
+                        .as_deref()
+                        .is_some_and(|account| account.to_lowercase().contains(&needle))
+                    || item.person.id.to_string().contains(&needle);
+                let matches_status = match status_filter.as_str() {
+                    "enabled" => item.person.enabled,
+                    "disabled" => !item.person.enabled,
+                    "passed" => item.person.passed_at.is_some(),
+                    "pending" => item.person.passed_at.is_none(),
+                    "unassigned" => item.person.unix_username.is_none(),
+                    _ => true,
+                };
+                matches_text && matches_status
+            });
             let template = PeopleTemplate {
                 csrf: csrf_for_session(state, session),
                 active_page: "people",
                 notice,
                 error,
-                people: people.into_iter().map(person_admin_view).collect(),
+                people,
+                total_people,
+                has_filters: !search.is_empty() || !status_filter.is_empty(),
+                search,
+                status_filter,
                 labels: labels(language),
                 current_path: "/people",
             };
@@ -1872,15 +1982,34 @@ async fn render_banks(
     notice: String,
     error: String,
     status: StatusCode,
+    query: BanksQuery,
 ) -> Response {
     match load_banks(state.catalog.clone()).await {
         Ok(banks) => {
+            let mut banks = bank_options(&banks);
+            let total_banks = banks.len();
+            let search = normalized_filter(query.q);
+            let environment_filter =
+                allowed_filter(query.environment, &["general", "host", "docker", "network"]);
+            let needle = search.to_lowercase();
+            banks.retain(|bank| {
+                let matches_text = needle.is_empty()
+                    || bank.id.to_lowercase().contains(&needle)
+                    || bank.title.to_lowercase().contains(&needle);
+                let matches_environment = environment_filter.is_empty()
+                    || bank.environment == environment_filter.as_str();
+                matches_text && matches_environment
+            });
             let template = BanksTemplate {
                 csrf: csrf_for_session(state, session),
                 active_page: "banks",
                 notice,
                 error,
-                banks: bank_options(&banks),
+                banks,
+                total_banks,
+                has_filters: !search.is_empty() || !environment_filter.is_empty(),
+                search,
+                environment_filter,
                 catalog_enabled: state.catalog.catalog_directory().is_some(),
                 labels: labels(language),
                 current_path: "/banks",
@@ -1973,6 +2102,7 @@ async fn render_tests(
     notice: String,
     error: String,
     status: StatusCode,
+    query: TestsQuery,
 ) -> Response {
     let banks = match load_banks(state.catalog.clone()).await {
         Ok(banks) => banks,
@@ -1986,13 +2116,33 @@ async fn render_tests(
         }
     };
     match test_admin_views(state, &banks) {
-        Ok(tests) => {
+        Ok(mut tests) => {
+            let total_tests = tests.len();
+            let search = normalized_filter(query.q);
+            let status_filter = allowed_filter(query.status, &["published", "draft"]);
+            let needle = search.to_lowercase();
+            tests.retain(|item| {
+                let matches_text = needle.is_empty()
+                    || item.test.id.to_lowercase().contains(&needle)
+                    || item.test.title.to_lowercase().contains(&needle)
+                    || item.bank_names.to_lowercase().contains(&needle);
+                let matches_status = match status_filter.as_str() {
+                    "published" => item.published,
+                    "draft" => !item.published,
+                    _ => true,
+                };
+                matches_text && matches_status
+            });
             let template = TestsTemplate {
                 csrf: csrf_for_session(state, session),
                 active_page: "tests",
                 notice,
                 error,
                 tests,
+                total_tests,
+                has_filters: !search.is_empty() || !status_filter.is_empty(),
+                search,
+                status_filter,
                 banks: bank_options(&banks),
                 labels: labels(language),
                 current_path: "/tests",
@@ -2058,6 +2208,8 @@ async fn render_test(
                 active_page: "tests",
                 notice,
                 error,
+                selected_bank_count: test.test.bank_ids.len(),
+                selected_question_count: test.question_count,
                 test,
                 banks: bank_options,
                 publications,
@@ -3049,6 +3201,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_filters_compose_search_and_operational_status() {
+        let harness = harness();
+        let alice_id = harness
+            .state
+            .db
+            .create_person("Alice Researcher", Some("alice"))
+            .unwrap();
+        let bob_id = harness
+            .state
+            .db
+            .create_person("Bob Operator", None)
+            .unwrap();
+        harness.state.db.set_person_enabled(bob_id, false).unwrap();
+
+        let mut docker_quiz = sample_quiz();
+        docker_quiz.title = "Container Operations".to_owned();
+        docker_quiz.environment = BankEnvironment::Docker;
+        harness
+            .state
+            .catalog
+            .create("docker-ops", &docker_quiz)
+            .unwrap();
+
+        harness
+            .state
+            .db
+            .create_test(&TestDefinitionInput {
+                id: "container-test".to_owned(),
+                title: "Container Readiness".to_owned(),
+                bank_ids: vec!["docker-ops".to_owned()],
+                pass_threshold_percent: 80,
+                max_attempts: 3,
+                question_limit: None,
+                shuffle_questions: true,
+                shuffle_choices: true,
+            })
+            .unwrap();
+        let published_quiz = harness
+            .state
+            .catalog
+            .compose(
+                "Container Readiness".to_owned(),
+                &["docker-ops".to_owned()],
+                CompositionOptions {
+                    pass_threshold_percent: 80,
+                    max_attempts: 3,
+                    question_limit: None,
+                    shuffle_questions: true,
+                    shuffle_choices: true,
+                },
+            )
+            .unwrap();
+        harness
+            .state
+            .db
+            .publish_test("container-test", &published_quiz)
+            .unwrap();
+
+        let (session, _) = login(&harness.app).await;
+        let body = get_page(&harness.app, "/people?q=alice", &session).await;
+        assert!(body.contains("Alice Researcher"));
+        assert!(!body.contains("Bob Operator"));
+        assert!(body.contains("1 / 2 total"));
+
+        let body = get_page(&harness.app, "/people?status=disabled", &session).await;
+        assert!(body.contains("Bob Operator"));
+        assert!(!body.contains("Alice Researcher"));
+        assert!(body.contains(&format!("/people/{bob_id}")));
+        assert!(!body.contains(&format!("/people/{alice_id}")));
+
+        let body = get_page(&harness.app, "/people?q=missing", &session).await;
+        assert!(body.contains("No people match these filters."));
+
+        let body = get_page(&harness.app, "/banks?environment=docker", &session).await;
+        assert!(body.contains("docker-ops"));
+        assert!(!body.contains("<code>legacy</code>"));
+
+        let body = get_page(&harness.app, "/tests?status=published", &session).await;
+        assert!(body.contains("container-test"));
+        assert!(body.contains("1 / 2 total"));
+        assert!(!body.contains("<td><code>legacy</code></td>"));
+    }
+
+    #[tokio::test]
     async fn web_composes_and_publishes_multiple_banks() {
         let harness = harness();
         harness
@@ -3319,6 +3555,21 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    async fn get_page(app: &Router, path: &str, session: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header(header::COOKIE, session)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response_body(response).await
     }
 
     async fn response_body(response: Response) -> String {

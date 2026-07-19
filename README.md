@@ -35,6 +35,8 @@ rules before access is granted.
   without rewriting its questions or audit history.
 - **Safe administration CRUD:** edit and remove people, unused question banks,
   and unpublished tests with CSRF-protected confirmation controls.
+- **Searchable administration:** filter people by account/exam state, banks by
+  environment, and tests by publication state from shareable list URLs.
 - **Bilingual Web and TUI** with English, Chinese, and bilingual modes.
 - **Direct account ownership:** each person owns at most one Unix account, and
   all enabled keys inherit it. Key comments and email-like labels are metadata.
@@ -82,7 +84,7 @@ Prebuilt releases target Linux x86_64 with glibc. Build from source for other
 architectures or incompatible glibc versions.
 
 ```sh
-VERSION=v0.4.2
+VERSION=v0.4.3
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -155,9 +157,11 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 
 Open `http://127.0.0.1:8787/`, then:
 
-1. Import or review JSON files under **Question banks**.
+1. Import or review JSON files under **Question banks**; use list search and
+   environment filters as the catalog grows.
 2. Create a test, select its question banks with checkboxes, and publish it.
-3. Create a person and open the person's detail page.
+3. Create a person and open the person's detail page; filter people by account
+   or exam state during routine administration.
 4. Assign the person's existing Unix account and register one or more keys.
 5. Reset the current exam on the detail page when another attempt is required.
 

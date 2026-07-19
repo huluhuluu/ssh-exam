@@ -30,6 +30,8 @@ Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或�
 - **发布历史**：查看并重新启用旧版本，不修改其题目和审计记录。
 - **安全的管理 CRUD**：通过 CSRF 防护和确认复选框修改、删除人员、未使用题库和
   未发布测试。
+- **可搜索的管理列表**：人员可按账号/考试状态筛选，题库可按环境筛选，测试可按
+  发布状态筛选；筛选结果使用可复制的 URL。
 - **中英双语**：Web 与 TUI 支持英文、中文和双语模式。
 - **人员直接绑定账号**：每个人员最多拥有一个 Unix 账号，所有启用公钥继承该账号；
   公钥注释和邮箱仅是标签。
@@ -70,7 +72,7 @@ authorized-keys 规则；任何异常都默认拒绝。
 预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
 
 ```sh
-VERSION=v0.4.2
+VERSION=v0.4.3
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -140,9 +142,9 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 
 打开 `http://127.0.0.1:8787/`，然后：
 
-1. 在“题库”中导入或检查 JSON 题库。
+1. 在“题库”中导入或检查 JSON 题库；题库增多后可使用搜索和环境筛选。
 2. 创建测试，通过复选框选择题库，然后发布。
-3. 创建人员并进入人员详情页。
+3. 创建人员并进入人员详情页；日常管理时可按账号或考试状态筛选人员。
 4. 为人员指定已有 Unix 账号，并登记一个或多个公钥。
 5. 需要增加尝试次数时，在详情页重置当前考试。
 

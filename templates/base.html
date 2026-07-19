@@ -87,7 +87,18 @@
     button.danger { color:#932727; border-color:#bd8582; }
     button.danger:hover { background:#fff3f2; }
     button:disabled { cursor:not-allowed; opacity:.55; }
+    .button-link { display:inline-flex; min-height:34px; align-items:center; justify-content:center; padding:6px 10px; border:1px solid #7c867f; border-radius:3px; background:#fff; color:#222824; font-size:13px; font-weight:600; text-decoration:none; }
+    .button-link:hover { background:#f0f2f0; }
     .actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .filter-bar { display:grid; grid-template-columns:minmax(240px,1fr) minmax(160px,220px) auto; align-items:end; gap:10px; margin-bottom:14px; padding:12px; border:1px solid #d5dad6; background:#f8f9f8; }
+    .filter-actions { display:flex; align-items:center; gap:7px; min-height:34px; }
+    .disclosure { border:1px solid #cbd1cc; background:#fff; }
+    .disclosure summary { padding:13px 15px; color:#1d231f; font-size:15px; font-weight:700; cursor:pointer; }
+    .disclosure summary:hover { background:#f5f7f5; }
+    .disclosure[open] summary { border-bottom:1px solid #dce0dd; }
+    .disclosure-body { padding:16px; }
+    .selection-summary { display:flex; gap:8px 18px; flex-wrap:wrap; margin:0 0 10px; padding:9px 10px; border-left:3px solid #3c805b; background:#f0f8f3; color:#34443a; font-size:12px; }
+    .selection-summary strong { margin-left:4px; }
     .status { display:inline-block; font-size:11px; font-weight:750; text-transform:uppercase; white-space:nowrap; }
     .good { color:#1c6942; }
     .bad { color:#9b2929; }
@@ -110,7 +121,7 @@
     .danger-zone h2 { color:#812828; }
     .destructive-form { display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; }
     .confirm-option { display:flex; align-items:flex-start; gap:8px; max-width:360px; margin:0; color:#71302d; font-weight:550; }
-    @media (max-width:680px) { .topbar-inner, main { width:min(100% - 20px,1180px); } .topbar-inner { flex-wrap:wrap; gap:0 8px; padding:8px 0; } .brand { width:100%; padding-bottom:5px; } nav { min-height:38px; order:2; } nav a { padding:0 8px; } .language-switch { order:3; margin-left:auto; } .signout { order:4; } main { padding-top:18px; } .page-head, .person-head, .danger-zone { flex-direction:column; } .page-actions, .destructive-form { width:100%; justify-content:flex-start; } .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .summary { grid-template-columns:1fr; } .summary div, .summary div:nth-child(odd) { border-left:0; border-top:1px solid #e1e4e2; } .summary div:first-child { border-top:0; } .form-grid, .check-list { grid-template-columns:1fr; } .form-grid .wide { grid-column:auto; } th, td { padding:9px; } }
+    @media (max-width:680px) { .topbar-inner, main { width:min(100% - 20px,1180px); } .topbar-inner { flex-wrap:wrap; gap:0 8px; padding:8px 0; } .brand { width:100%; padding-bottom:5px; } nav { min-height:38px; order:2; } nav a { padding:0 8px; } .language-switch { order:3; margin-left:auto; } .signout { order:4; } main { padding-top:18px; } .page-head, .person-head, .danger-zone { flex-direction:column; } .page-actions, .destructive-form { width:100%; justify-content:flex-start; } .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .summary { grid-template-columns:1fr; } .summary div, .summary div:nth-child(odd) { border-left:0; border-top:1px solid #e1e4e2; } .summary div:first-child { border-top:0; } .form-grid, .check-list, .filter-bar { grid-template-columns:1fr; } .form-grid .wide { grid-column:auto; } .filter-actions, .filter-actions .button-link, .filter-actions button { width:100%; } th, td { padding:9px; } .responsive-list thead { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; } .responsive-list, .responsive-list tbody, .responsive-list tr, .responsive-list td { display:block; width:100%; } .responsive-list tr { padding:5px 0; border-bottom:1px solid #cfd5d0; } .responsive-list tr:last-child { border-bottom:0; } .responsive-list td { display:grid; grid-template-columns:minmax(100px,38%) minmax(0,1fr); gap:10px; border:0; } .responsive-list td::before { content:attr(data-label); color:#59625c; font-size:11px; font-weight:700; } }
   </style>
 </head>
 <body>

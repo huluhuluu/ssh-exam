@@ -7,22 +7,29 @@
 {% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 
 <section class="band" aria-labelledby="people-heading">
-  <div class="section-head"><h2 id="people-heading">{{ labels.registered_people }}</h2><span class="muted">{{ people.len() }} {{ labels.total }}</span></div>
-  {% if people.len() == 0 %}
+  <div class="section-head"><h2 id="people-heading">{{ labels.registered_people }}</h2><span class="muted">{% if has_filters %}{{ people.len() }} / {% endif %}{{ total_people }} {{ labels.total }}</span></div>
+  <form class="filter-bar" method="get" action="/people">
+    <div class="filter-search"><label for="people-search">{{ labels.search }}</label><input id="people-search" name="q" value="{{ search }}" maxlength="200" placeholder="{{ labels.search_placeholder }}"></div>
+    <div><label for="people-status">{{ labels.status }}</label><select id="people-status" name="status"><option value="">{{ labels.all_statuses }}</option><option value="enabled"{% if status_filter == "enabled" %} selected{% endif %}>{{ labels.enabled }}</option><option value="disabled"{% if status_filter == "disabled" %} selected{% endif %}>{{ labels.disabled }}</option><option value="passed"{% if status_filter == "passed" %} selected{% endif %}>{{ labels.passed }}</option><option value="pending"{% if status_filter == "pending" %} selected{% endif %}>{{ labels.pending }}</option><option value="unassigned"{% if status_filter == "unassigned" %} selected{% endif %}>{{ labels.unassigned }}</option></select></div>
+    <div class="filter-actions"><button class="primary" type="submit">{{ labels.filter }}</button>{% if has_filters %}<a class="button-link" href="/people">{{ labels.clear_filters }}</a>{% endif %}</div>
+  </form>
+  {% if total_people == 0 %}
     <div class="empty">{{ labels.no_people }}</div>
+  {% else if people.len() == 0 %}
+    <div class="empty">{{ labels.no_matching_people }}</div>
   {% else %}
     <div class="table-wrap">
-      <table>
+      <table class="responsive-list">
         <thead><tr><th>{{ labels.person }}</th><th>{{ labels.unix_account }}</th><th>{{ labels.account_status }}</th><th>{{ labels.exam_status }}</th><th>{{ labels.attempts }}</th><th>{{ labels.device_keys }}</th><th>{{ labels.action }}</th></tr></thead>
         <tbody>
         {% for item in people %}
           <tr>
-            <td><strong>{{ item.person.display_name }}</strong><br><span class="muted">ID {{ item.person.id }}</span></td>
-            <td>{% if item.person.unix_username.is_some() %}<code>{{ item.person.unix_username.as_ref().unwrap() }}</code>{% else %}<span class="status pending">{{ labels.unassigned }}</span>{% endif %}</td>
-            <td>{% if item.person.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</td>
-            <td>{% if item.person.passed_at.is_some() %}<span class="status good">{{ labels.passed }}</span>{% else %}<span class="status pending">{{ labels.pending }}</span>{% endif %}</td>
-            <td>{{ item.attempt_count }}</td><td>{{ item.keys.len() }}</td>
-            <td><a class="text-action" href="/people/{{ item.person.id }}">{{ labels.view_details }}</a></td>
+            <td data-label="{{ labels.person }}"><strong>{{ item.person.display_name }}</strong><br><span class="muted">ID {{ item.person.id }}</span></td>
+            <td data-label="{{ labels.unix_account }}">{% if item.person.unix_username.is_some() %}<code>{{ item.person.unix_username.as_ref().unwrap() }}</code>{% else %}<span class="status pending">{{ labels.unassigned }}</span>{% endif %}</td>
+            <td data-label="{{ labels.account_status }}">{% if item.person.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</td>
+            <td data-label="{{ labels.exam_status }}">{% if item.person.passed_at.is_some() %}<span class="status good">{{ labels.passed }}</span>{% else %}<span class="status pending">{{ labels.pending }}</span>{% endif %}</td>
+            <td data-label="{{ labels.attempts }}">{{ item.attempt_count }}</td><td data-label="{{ labels.device_keys }}">{{ item.keys.len() }}</td>
+            <td data-label="{{ labels.action }}"><a class="text-action" href="/people/{{ item.person.id }}">{{ labels.view_details }}</a></td>
           </tr>
         {% endfor %}
         </tbody>
@@ -31,14 +38,17 @@
   {% endif %}
 </section>
 
-<section class="band" aria-labelledby="create-person-heading">
-  <h2 id="create-person-heading">{{ labels.create_person }}</h2>
-  <p class="help">{{ labels.create_person_help }}</p>
-  <form class="form-grid" method="post" action="/persons">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div><label for="display-name">{{ labels.display_name }}</label><input id="display-name" name="display_name" maxlength="200" required></div>
-    <div><label for="unix-username">{{ labels.unix_account }}</label><input id="unix-username" name="unix_username" maxlength="32" required></div>
-    <div style="align-self:end"><button class="primary" type="submit">{{ labels.create_person }}</button></div>
-  </form>
+<section class="band">
+  <details class="disclosure">
+    <summary>{{ labels.create_person }}</summary>
+    <div class="disclosure-body"><p class="help">{{ labels.create_person_help }}</p>
+      <form class="form-grid" method="post" action="/persons">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div><label for="display-name">{{ labels.display_name }}</label><input id="display-name" name="display_name" maxlength="200" required></div>
+        <div><label for="unix-username">{{ labels.unix_account }}</label><input id="unix-username" name="unix_username" maxlength="32" required></div>
+        <div style="align-self:end"><button class="primary" type="submit">{{ labels.create_person }}</button></div>
+      </form>
+    </div>
+  </details>
 </section>
 {% endblock %}

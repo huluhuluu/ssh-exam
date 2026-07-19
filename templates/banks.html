@@ -4,21 +4,30 @@
 <div class="page-head"><div><h1>{{ labels.question_banks }}</h1><p>{{ labels.exam_help }}</p></div></div>
 {% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 <section class="band" aria-labelledby="banks-heading">
-  <div class="section-head"><h2 id="banks-heading">{{ labels.configured_banks }}</h2><span class="muted">{{ banks.len() }} {{ labels.total }}</span></div>
-  <p class="help">{{ labels.educational_only }}</p>
-  <div class="table-wrap"><table><thead><tr><th>{{ labels.bank_id }}</th><th>{{ labels.title }}</th><th>{{ labels.environment }}</th><th>{{ labels.questions }}</th><th>{{ labels.action }}</th></tr></thead><tbody>
-  {% for bank in banks %}<tr><td><code>{{ bank.id }}</code>{% if bank.legacy %}<br><span class="muted">{{ labels.legacy_bank }}</span>{% endif %}</td><td>{{ bank.title }}</td><td>{{ bank.environment }}</td><td>{{ bank.question_count }}</td><td><a class="text-action" href="/banks/{{ bank.id }}">{{ labels.view_details }}</a></td></tr>{% endfor %}
-  </tbody></table></div>
-</section>
-<section class="band" aria-labelledby="import-heading">
-  <h2 id="import-heading">{{ labels.import_json }}</h2><p class="help">{{ labels.import_help }}</p>
-  {% if catalog_enabled %}
-  <form class="form-grid" method="post" action="/banks">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div><label for="bank-id">{{ labels.bank_id }}</label><input id="bank-id" name="bank_id" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" required><p class="help">{{ labels.bank_id_help }}</p></div>
-    <div class="wide"><label for="json">{{ labels.json_document }}</label><textarea class="code-input" id="json" name="json" maxlength="1048576" rows="18" required></textarea></div>
-    <div><button class="primary" type="submit">{{ labels.import_json }}</button></div>
+  <div class="section-head"><h2 id="banks-heading">{{ labels.configured_banks }}</h2><span class="muted">{% if has_filters %}{{ banks.len() }} / {% endif %}{{ total_banks }} {{ labels.total }}</span></div>
+  <form class="filter-bar" method="get" action="/banks">
+    <div class="filter-search"><label for="bank-search">{{ labels.search }}</label><input id="bank-search" name="q" value="{{ search }}" maxlength="200" placeholder="{{ labels.search_placeholder }}"></div>
+    <div><label for="bank-environment">{{ labels.environment }}</label><select id="bank-environment" name="environment"><option value="">{{ labels.all_environments }}</option><option value="general"{% if environment_filter == "general" %} selected{% endif %}>general</option><option value="host"{% if environment_filter == "host" %} selected{% endif %}>host</option><option value="docker"{% if environment_filter == "docker" %} selected{% endif %}>docker</option><option value="network"{% if environment_filter == "network" %} selected{% endif %}>network</option></select></div>
+    <div class="filter-actions"><button class="primary" type="submit">{{ labels.filter }}</button>{% if has_filters %}<a class="button-link" href="/banks">{{ labels.clear_filters }}</a>{% endif %}</div>
   </form>
-  {% else %}<div class="empty">{{ labels.catalog_disabled }}</div>{% endif %}
+  <p class="help">{{ labels.educational_only }}</p>
+  {% if banks.len() == 0 %}<div class="empty">{% if has_filters %}{{ labels.no_matching_banks }}{% else %}{{ labels.catalog_disabled }}{% endif %}</div>{% else %}<div class="table-wrap"><table class="responsive-list"><thead><tr><th>{{ labels.bank_id }}</th><th>{{ labels.title }}</th><th>{{ labels.environment }}</th><th>{{ labels.questions }}</th><th>{{ labels.action }}</th></tr></thead><tbody>
+  {% for bank in banks %}<tr><td data-label="{{ labels.bank_id }}"><code>{{ bank.id }}</code>{% if bank.legacy %}<br><span class="muted">{{ labels.legacy_bank }}</span>{% endif %}</td><td data-label="{{ labels.title }}">{{ bank.title }}</td><td data-label="{{ labels.environment }}">{{ bank.environment }}</td><td data-label="{{ labels.questions }}">{{ bank.question_count }}</td><td data-label="{{ labels.action }}"><a class="text-action" href="/banks/{{ bank.id }}">{{ labels.view_details }}</a></td></tr>{% endfor %}
+  </tbody></table></div>{% endif %}
+</section>
+<section class="band">
+  <details class="disclosure">
+    <summary>{{ labels.import_json }}</summary>
+    <div class="disclosure-body"><p class="help">{{ labels.import_help }}</p>
+      {% if catalog_enabled %}
+      <form class="form-grid" method="post" action="/banks">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div><label for="bank-id">{{ labels.bank_id }}</label><input id="bank-id" name="bank_id" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" required><p class="help">{{ labels.bank_id_help }}</p></div>
+        <div class="wide"><label for="json">{{ labels.json_document }}</label><textarea class="code-input" id="json" name="json" maxlength="1048576" rows="18" required></textarea></div>
+        <div><button class="primary" type="submit">{{ labels.import_json }}</button></div>
+      </form>
+      {% else %}<div class="empty">{{ labels.catalog_disabled }}</div>{% endif %}
+    </div>
+  </details>
 </section>
 {% endblock %}
