@@ -21,8 +21,8 @@
 </section>
 
 <section class="band" aria-labelledby="account-heading">
-  <h2 id="account-heading">{{ labels.unix_account }}</h2><p class="help">{{ labels.unix_account_help }}</p>
-  <form class="form-grid" method="post" action="/persons/{{ item.person.id }}/unix-account"><input type="hidden" name="csrf" value="{{ csrf }}"><div><label for="account">{{ labels.unix_login }}</label><input id="account" name="unix_username" maxlength="32" value="{% if item.person.unix_username.is_some() %}{{ item.person.unix_username.as_ref().unwrap() }}{% endif %}"></div><div style="align-self:end"><button class="primary" type="submit">{{ labels.save_account }}</button></div></form>
+  <h2 id="account-heading">{{ labels.settings }}</h2><p class="help">{{ labels.unix_account_help }}</p>
+  <form class="form-grid" method="post" action="/persons/{{ item.person.id }}/profile"><input type="hidden" name="csrf" value="{{ csrf }}"><div><label for="person-name">{{ labels.display_name }}</label><input id="person-name" name="display_name" maxlength="200" value="{{ item.person.display_name }}" required></div><div><label for="account">{{ labels.unix_login }}</label><input id="account" name="unix_username" maxlength="32" value="{% if item.person.unix_username.is_some() %}{{ item.person.unix_username.as_ref().unwrap() }}{% endif %}"></div><div><button class="primary" type="submit">{{ labels.save_person }}</button></div></form>
 </section>
 
 <section class="band" aria-labelledby="keys-heading">
@@ -32,6 +32,11 @@
   {% for key in item.keys %}<tr><td><code>{{ key.fingerprint }}</code></td><td>{{ key.key_type }}{% if key.comment.is_some() %}<br><span class="muted">{{ key.comment.as_ref().unwrap() }}</span>{% endif %}</td><td>{% if key.enabled %}<span class="status good">{{ labels.enabled }}</span>{% else %}<span class="status bad">{{ labels.disabled }}</span>{% endif %}</td><td><div class="actions"><form method="post" action="/people/{{ item.person.id }}/keys/{{ key.id }}/enabled"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{% if key.enabled %}false{% else %}true{% endif %}"><button type="submit">{% if key.enabled %}{{ labels.disable }}{% else %}{{ labels.enable }}{% endif %}</button></form><form method="post" action="/people/{{ item.person.id }}/keys/{{ key.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">{{ labels.remove }}</button></form></div></td></tr>{% endfor %}
   </tbody></table></div>{% endif %}
   <form class="compact-form form-grid" method="post" action="/persons/{{ item.person.id }}/keys"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="wide"><label for="public-key">{{ labels.public_key }}</label><textarea id="public-key" name="public_key" placeholder="ssh-ed25519 AAAA... device-label" required></textarea></div><div><button class="primary" type="submit">{{ labels.add_device_key }}</button></div></form>
+</section>
+
+<section class="band danger-zone" aria-labelledby="delete-person-heading">
+  <div><h2 id="delete-person-heading">{{ labels.danger_zone }}</h2><p class="help">{{ labels.delete_person_help }}</p></div>
+  <form class="destructive-form" method="post" action="/persons/{{ item.person.id }}/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><label class="confirm-option"><input name="confirm" type="checkbox" value="on" required><span>{{ labels.confirm_delete }}</span></label><button class="danger" type="submit">{{ labels.delete_person }}</button></form>
 </section>
 
 {% endblock %}

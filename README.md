@@ -33,6 +33,8 @@ rules before access is granted.
   set question limits and shuffle behavior, then publish an immutable revision.
 - **Publication history:** inspect and reactivate an earlier test revision
   without rewriting its questions or audit history.
+- **Safe administration CRUD:** edit and remove people, unused question banks,
+  and unpublished tests with CSRF-protected confirmation controls.
 - **Bilingual Web and TUI** with English, Chinese, and bilingual modes.
 - **Direct account ownership:** each person owns at most one Unix account, and
   all enabled keys inherit it. Key comments and email-like labels are metadata.
@@ -80,7 +82,7 @@ Prebuilt releases target Linux x86_64 with glibc. Build from source for other
 architectures or incompatible glibc versions.
 
 ```sh
-VERSION=v0.4.1
+VERSION=v0.4.2
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -154,7 +156,7 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 Open `http://127.0.0.1:8787/`, then:
 
 1. Import or review JSON files under **Question banks**.
-2. Create a test, list its bank IDs in composition order, and publish it.
+2. Create a test, select its question banks with checkboxes, and publish it.
 3. Create a person and open the person's detail page.
 4. Assign the person's existing Unix account and register one or more keys.
 5. Reset the current exam on the detail page when another attempt is required.
@@ -196,6 +198,13 @@ identity, bank order, policy, and questions.
 - Attempts and passes are recorded against test ID + revision.
 - Publication history is immutable; reactivating an earlier revision restores
   passes previously earned for that exact revision.
+- Test bank selection uses checkboxes. Existing selections are shown first in
+  their saved composition order.
+
+Deletion is deliberately conservative: removing a person cascades only that
+person's keys and exam records; a question bank referenced by any saved test
+cannot be removed; active tests and tests with publication history cannot be
+deleted.
 
 Useful non-interactive operations:
 

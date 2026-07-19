@@ -509,6 +509,17 @@ impl QuizCatalog {
         Quiz::update(&path, operation)
     }
 
+    pub fn delete(&self, id: &str) -> Result<()> {
+        validate_bank_id(id)?;
+        if id == LEGACY_BANK_ID {
+            bail!("the legacy quiz bank cannot be deleted");
+        }
+        let path = self.bank_path(id)?;
+        regular_file_metadata(&path)?;
+        fs::remove_file(&path).with_context(|| format!("failed to delete quiz bank {id}"))?;
+        Ok(())
+    }
+
     fn bank_path(&self, id: &str) -> Result<PathBuf> {
         validate_bank_id(id)?;
         if id == LEGACY_BANK_ID {
@@ -895,5 +906,10 @@ mod tests {
             2,
             "catalog mutations must not leave temporary files"
         );
+
+        catalog.delete("host-ssh").unwrap();
+        assert!(catalog.load("host-ssh").is_err());
+        assert_eq!(fs::read_dir(&banks_path).unwrap().count(), 1);
+        assert!(catalog.delete(LEGACY_BANK_ID).is_err());
     }
 }

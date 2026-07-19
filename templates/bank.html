@@ -2,7 +2,7 @@
 {% block title %}{{ quiz.title }} - SSH Exam Gate{% endblock %}
 {% block content %}
 <div class="breadcrumb"><a href="/banks">{{ labels.question_banks }}</a><span>/</span><span>{{ quiz.title }}</span></div>
-<div class="page-head"><div><h1>{{ quiz.title }}</h1><p><code>{{ bank_id }}</code> | {{ questions.len() }} {{ labels.questions }}</p></div><a class="text-action" href="/banks/{{ bank_id }}/export">{{ labels.export_json }}</a></div>
+<div class="page-head"><div><h1>{{ quiz.title }}</h1><p><code>{{ bank_id }}</code> | {{ questions.len() }} {{ labels.questions }}</p></div><div class="page-actions"><a class="text-action" href="/banks/{{ bank_id }}/export">{{ labels.export_json }}</a></div></div>
 {% if error.len() > 0 %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 
 <section class="band" aria-labelledby="settings-heading">
@@ -16,6 +16,8 @@
   </form>
 </section>
 
+<section class="band"><div class="summary"><div><span>{{ labels.used_by_tests }}</span><strong>{{ reference_count }}</strong></div><div><span>{{ labels.environment }}</span><strong>{{ environment }}</strong></div><div><span>{{ labels.questions }}</span><strong>{{ questions.len() }}</strong></div></div></section>
+
 <section class="band" aria-labelledby="questions-heading">
   <div class="section-head"><h2 id="questions-heading">{{ labels.questions }}</h2><span class="muted">{{ questions.len() }} {{ labels.total }}</span></div>
   {% for question in questions %}<article class="question">
@@ -26,4 +28,5 @@
 </section>
 
 <section class="band" aria-labelledby="add-question-heading"><h2 id="add-question-heading">{{ labels.add_question }}</h2><form class="form-grid" method="post" action="/banks/{{ bank_id }}/questions" style="margin-top:12px"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="wide"><label for="new-prompt">{{ labels.prompt }}</label><textarea id="new-prompt" name="prompt" maxlength="2000" required></textarea></div><div class="wide"><label for="new-choices">{{ labels.choices }}</label><textarea id="new-choices" name="choices" maxlength="10020" required></textarea><p class="help">{{ labels.choices_help }}</p></div><div><label for="new-answer">{{ labels.correct_answer }}</label><select id="new-answer" name="correct_index">{% for option in answer_options %}<option value="{{ option.index }}">{{ labels.choice }} {{ option.number }}</option>{% endfor %}</select></div><div style="align-self:end"><button class="primary" type="submit">{{ labels.add_question }}</button></div></form></section>
+{% if !legacy %}<section class="band danger-zone" aria-labelledby="delete-bank-heading"><div><h2 id="delete-bank-heading">{{ labels.danger_zone }}</h2><p class="help">{{ labels.delete_bank_help }}</p></div><form class="destructive-form" method="post" action="/banks/{{ bank_id }}/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><label class="confirm-option"><input name="confirm" type="checkbox" value="on" required{% if reference_count > 0 %} disabled{% endif %}><span>{{ labels.confirm_delete }}</span></label><button class="danger" type="submit"{% if reference_count > 0 %} disabled title="{{ labels.bank_in_use }}"{% endif %}>{{ labels.delete_bank }}</button></form></section>{% endif %}
 {% endblock %}

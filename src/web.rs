@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -162,15 +163,23 @@ define_labels! {
     disable => ("Disable", "禁用"),
     enable => ("Enable", "启用"),
     remove => ("Remove", "移除"),
+    danger_zone => ("Danger zone", "危险操作"),
+    confirm_delete => ("I understand this deletion cannot be undone", "我确认此删除操作无法撤销"),
+    delete_person => ("Delete person", "删除人员"),
+    delete_person_help => ("Deletes this person, registered keys, attempts, and pass records.", "删除此人员及其公钥、尝试记录和通过记录。"),
     public_key => ("Public key", "公钥"),
     add_device_key => ("Add device key", "添加设备密钥"),
     unix_account_help => ("All enabled keys for this person authenticate only to this existing Unix account. Leave empty to deny SSH access.", "此人员的所有已启用公钥只能登录该已有 Unix 账号；留空将拒绝 SSH 访问。"),
-    save_account => ("Save Unix account", "保存 Unix 账号"),
+    save_person => ("Save person", "保存人员"),
     unassigned => ("Unassigned", "未分配"),
     unix_login => ("Unix login account", "Unix 登录账号"),
     action => ("Action", "操作"),
     exam_help => ("Saved changes do not alter the active immutable revision until you publish this test again.", "保存的修改不会改变当前生效的不可变版本；重新发布此测试后才会生效。"),
     configured_banks => ("Configured banks", "已配置题库"),
+    delete_bank => ("Delete bank", "删除题库"),
+    delete_bank_help => ("Only non-legacy banks unused by saved tests can be deleted.", "只能删除未被已保存测试引用的非兼容题库。"),
+    used_by_tests => ("Used by saved tests", "已保存测试引用数"),
+    bank_in_use => ("This bank is referenced by a saved test", "此题库正被已保存测试引用"),
     legacy_bank => ("Legacy quiz_path", "兼容 quiz_path"),
     bank_id => ("Bank ID", "题库 ID"),
     bank_id_help => ("Lowercase letters, digits, and single internal hyphens.", "使用小写字母、数字和单个连接短横线。"),
@@ -202,9 +211,12 @@ define_labels! {
     published => ("Published", "已发布"),
     publish => ("Publish", "发布"),
     bank_selection => ("Question bank IDs", "题库 ID"),
-    bank_selection_help => ("One bank ID per line. Order controls question composition.", "每行一个题库 ID，顺序决定题目组合顺序。"),
+    bank_selection_help => ("Selected banks are composed in the order shown.", "所选题库将按照当前显示顺序组合。"),
     combined_questions => ("Combined questions", "组合题目数"),
     save_test => ("Save test", "保存测试"),
+    delete_test => ("Delete test", "删除测试"),
+    delete_test_help => ("Only unpublished drafts without publication history can be deleted.", "只能删除没有发布历史的未发布草稿。"),
+    no_saved_tests => ("No saved tests.", "尚无已保存测试。"),
     current_revision => ("Current revision", "当前版本"),
     no_published_test => ("No test is published.", "当前没有已发布测试。"),
     question_limit => ("Questions per attempt", "每次考试题数"),
@@ -343,6 +355,8 @@ struct BankTemplate {
     error: String,
     quiz: Quiz,
     bank_id: String,
+    legacy: bool,
+    reference_count: usize,
     environment: &'static str,
     questions: Vec<QuestionAdminView>,
     answer_options: Vec<AnswerOption>,
@@ -371,7 +385,7 @@ struct TestTemplate {
     notice: String,
     error: String,
     test: TestAdminView,
-    bank_ids_text: String,
+    banks: Vec<BankOption>,
     publications: Vec<PublicationAdminView>,
     labels: Labels,
     current_path: String,
@@ -426,11 +440,13 @@ struct AnswerOption {
 
 #[derive(Clone)]
 struct BankOption {
+    position: usize,
     id: String,
     title: String,
     environment: &'static str,
     question_count: usize,
     legacy: bool,
+    selected: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -447,6 +463,12 @@ struct LoginForm {
 #[derive(Deserialize)]
 struct CsrfForm {
     csrf: String,
+}
+
+#[derive(Deserialize)]
+struct ConfirmForm {
+    csrf: String,
+    confirm: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -475,6 +497,13 @@ struct UnixAccountForm {
 }
 
 #[derive(Deserialize)]
+struct PersonProfileForm {
+    csrf: String,
+    display_name: String,
+    unix_username: String,
+}
+
+#[derive(Deserialize)]
 struct ImportBankForm {
     csrf: String,
     bank_id: String,
@@ -486,6 +515,7 @@ struct TestForm {
     csrf: String,
     test_id: String,
     title: String,
+    #[serde(default)]
     bank_ids: String,
     pass_threshold_percent: String,
     max_attempts: String,
@@ -493,6 +523,8 @@ struct TestForm {
     question_limit: String,
     shuffle_questions: Option<String>,
     shuffle_choices: Option<String>,
+    #[serde(flatten)]
+    bank_selections: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -552,8 +584,10 @@ pub fn router(state: WebState) -> Router {
         .route("/banks", get(banks_page).post(import_bank))
         .route("/banks/:bank_id", get(bank_page))
         .route("/banks/:bank_id/export", get(export_bank))
+        .route("/banks/:bank_id/delete", post(delete_bank))
         .route("/tests", get(tests_page).post(create_test))
         .route("/tests/:test_id", get(test_page).post(update_test))
+        .route("/tests/:test_id/delete", post(delete_test))
         .route("/tests/:test_id/publish", post(publish_test))
         .route(
             "/tests/:test_id/publications/:publication_id/activate",
@@ -565,8 +599,10 @@ pub fn router(state: WebState) -> Router {
         .route("/logout", post(logout))
         .route("/persons", post(create_person))
         .route("/persons/:id/unix-account", post(update_unix_account))
+        .route("/persons/:id/profile", post(update_person_profile))
         .route("/persons/:id/enabled", post(toggle_person))
         .route("/persons/:id/reset", post(reset_exam))
+        .route("/persons/:id/delete", post(delete_person))
         .route("/persons/:id/keys", post(add_key))
         .route("/people/:person_id/keys/:id/enabled", post(toggle_key))
         .route("/people/:person_id/keys/:id/remove", post(remove_key))
@@ -925,6 +961,47 @@ async fn create_person(
     }
 }
 
+async fn delete_person(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Form(form): Form<ConfirmForm>,
+) -> Response {
+    let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    let language = language_from_headers(&headers);
+    if form.confirm.as_deref() != Some("on") {
+        return render_person(
+            &state,
+            &session,
+            language,
+            id,
+            String::new(),
+            language.text(
+                "Confirm the deletion with the checkbox.",
+                "请先勾选确认框以执行删除。",
+            ),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    match state.db.delete_person(id) {
+        Ok(()) => flash_redirect(&state, "/people", "person-deleted"),
+        Err(error) => render_person(
+            &state,
+            &session,
+            language,
+            id,
+            String::new(),
+            public_db_error(&error, language),
+            match error {
+                GateError::NotFound => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+        ),
+    }
+}
+
 async fn toggle_person(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -964,6 +1041,27 @@ async fn update_unix_account(
             state
                 .db
                 .set_person_unix_username(id, unix_username.as_deref())
+        },
+    )
+}
+
+async fn update_person_profile(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Form(form): Form<PersonProfileForm>,
+) -> Response {
+    let unix_username = optional_text(&form.unix_username);
+    mutate_person(
+        &state,
+        &headers,
+        &form.csrf,
+        id,
+        "person-profile-updated",
+        || {
+            state
+                .db
+                .update_person(id, &form.display_name, unix_username.as_deref())
         },
     )
 }
@@ -1157,6 +1255,70 @@ async fn import_bank(
     }
 }
 
+async fn delete_bank(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(bank_id): AxumPath<String>,
+    Form(form): Form<ConfirmForm>,
+) -> Response {
+    let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    let language = language_from_headers(&headers);
+    if form.confirm.as_deref() != Some("on") {
+        return render_bank(
+            &state,
+            &session,
+            language,
+            &bank_id,
+            String::new(),
+            language.text(
+                "Confirm the deletion with the checkbox.",
+                "请先勾选确认框以执行删除。",
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    let catalog = state.catalog.clone();
+    let db = state.db.clone();
+    let lock = state.quiz_lock.clone();
+    let delete_id = bank_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("quiz update lock is unavailable"))?;
+        if !db.tests_using_bank(&delete_id)?.is_empty() {
+            return Err(anyhow::anyhow!(
+                "question bank is referenced by a saved test"
+            ));
+        }
+        catalog.delete(&delete_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => flash_redirect(&state, "/banks", "bank-deleted"),
+        Ok(Err(error)) => {
+            render_bank(
+                &state,
+                &session,
+                language,
+                &bank_id,
+                String::new(),
+                localized_error(language, &error.to_string()),
+                StatusCode::BAD_REQUEST,
+            )
+            .await
+        }
+        Err(_) => localized_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            language,
+            "quiz delete task failed",
+            "题库删除任务失败",
+        ),
+    }
+}
+
 async fn create_test(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1174,6 +1336,51 @@ async fn update_test(
     mutate_test_definition(state, headers, form, Some(test_id)).await
 }
 
+async fn delete_test(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    AxumPath(test_id): AxumPath<String>,
+    Form(form): Form<ConfirmForm>,
+) -> Response {
+    let Ok(session) = authorize_mutation(&state, &headers, &form.csrf) else {
+        return mutation_rejection(&state, &headers);
+    };
+    let language = language_from_headers(&headers);
+    if form.confirm.as_deref() != Some("on") {
+        return render_test(
+            &state,
+            &session,
+            language,
+            &test_id,
+            String::new(),
+            language.text(
+                "Confirm the deletion with the checkbox.",
+                "请先勾选确认框以执行删除。",
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    match state.db.delete_test(&test_id) {
+        Ok(()) => flash_redirect(&state, "/tests", "test-deleted"),
+        Err(error) => {
+            render_test(
+                &state,
+                &session,
+                language,
+                &test_id,
+                String::new(),
+                public_db_error(&error, language),
+                match error {
+                    GateError::NotFound => StatusCode::NOT_FOUND,
+                    _ => StatusCode::BAD_REQUEST,
+                },
+            )
+            .await
+        }
+    }
+}
+
 async fn mutate_test_definition(
     state: WebState,
     headers: HeaderMap,
@@ -1186,6 +1393,10 @@ async fn mutate_test_definition(
     let language = language_from_headers(&headers);
     let input = parse_test_form(&form);
     let result = input.and_then(|input| {
+        let _guard = state
+            .quiz_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("quiz update lock is unavailable"))?;
         state.catalog.compose(
             input.title.clone(),
             &input.bank_ids,
@@ -1255,6 +1466,10 @@ async fn publish_test(
     };
     let language = language_from_headers(&headers);
     let result = (|| -> Result<PublishedTest> {
+        let _guard = state
+            .quiz_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("quiz update lock is unavailable"))?;
         let test = state.db.get_test(&test_id)?;
         let quiz = state.catalog.compose(
             test.title,
@@ -1321,9 +1536,25 @@ async fn activate_publication(
 }
 
 fn parse_test_form(form: &TestForm) -> Result<TestDefinitionInput> {
-    let bank_ids = form
-        .bank_ids
-        .lines()
+    let mut checkbox_banks = form
+        .bank_selections
+        .iter()
+        .filter_map(|(name, value)| {
+            name.strip_prefix("bank_")?
+                .parse::<usize>()
+                .ok()
+                .map(|position| (position, value.as_str()))
+        })
+        .collect::<Vec<_>>();
+    checkbox_banks.sort_by_key(|(position, _)| *position);
+    let bank_values = if checkbox_banks.is_empty() {
+        vec![form.bank_ids.as_str()]
+    } else {
+        checkbox_banks.into_iter().map(|(_, value)| value).collect()
+    };
+    let bank_ids = bank_values
+        .into_iter()
+        .flat_map(str::lines)
         .flat_map(|line| line.split(','))
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1685,6 +1916,17 @@ async fn render_bank(
                 );
             };
             let quiz = selected.quiz.clone();
+            let reference_count = match state.db.tests_using_bank(bank_id) {
+                Ok(references) => references.len(),
+                Err(_) => {
+                    return localized_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        language,
+                        "database error",
+                        "数据库错误",
+                    )
+                }
+            };
             let environment = quiz.environment.as_str();
             let questions = quiz
                 .questions
@@ -1706,6 +1948,8 @@ async fn render_bank(
                 error,
                 quiz,
                 bank_id: bank_id.to_owned(),
+                legacy: selected.legacy,
+                reference_count,
                 environment,
                 questions,
                 answer_options: answer_options(20),
@@ -1794,7 +2038,7 @@ async fn render_test(
                     "未找到测试",
                 );
             };
-            let bank_ids_text = test.test.bank_ids.join("\n");
+            let bank_options = bank_options_for_test(&banks, &test.test.bank_ids);
             let publications = match state.db.list_publications(test_id) {
                 Ok(publications) => publications
                     .into_iter()
@@ -1815,7 +2059,7 @@ async fn render_test(
                 notice,
                 error,
                 test,
-                bank_ids_text,
+                banks: bank_options,
                 publications,
                 labels: labels(language),
                 current_path: format!("/tests/{test_id}"),
@@ -1915,12 +2159,42 @@ fn person_admin_view(item: PersonView) -> PersonAdminView {
 fn bank_options(banks: &[QuizBank]) -> Vec<BankOption> {
     banks
         .iter()
-        .map(|bank| BankOption {
+        .enumerate()
+        .map(|(position, bank)| BankOption {
+            position,
             id: bank.id.clone(),
             title: bank.quiz.title.clone(),
             environment: bank.quiz.environment.as_str(),
             question_count: bank.quiz.questions.len(),
             legacy: bank.legacy,
+            selected: false,
+        })
+        .collect()
+}
+
+fn bank_options_for_test(banks: &[QuizBank], selected_ids: &[String]) -> Vec<BankOption> {
+    let mut ordered = Vec::with_capacity(banks.len());
+    for id in selected_ids {
+        if let Some(bank) = banks.iter().find(|bank| &bank.id == id) {
+            ordered.push(bank);
+        }
+    }
+    ordered.extend(
+        banks
+            .iter()
+            .filter(|bank| !selected_ids.iter().any(|id| id == &bank.id)),
+    );
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(position, bank)| BankOption {
+            position,
+            id: bank.id.clone(),
+            title: bank.quiz.title.clone(),
+            environment: bank.quiz.environment.as_str(),
+            question_count: bank.quiz.questions.len(),
+            legacy: bank.legacy,
+            selected: selected_ids.iter().any(|id| id == &bank.id),
         })
         .collect()
 }
@@ -2125,7 +2399,9 @@ fn flash_message(state: &WebState, headers: &HeaderMap, language: WebLanguage) -
     }
     match code {
         "person-created" => language.text("Person created.", "人员已创建。"),
+        "person-deleted" => language.text("Person deleted.", "人员已删除。"),
         "person-updated" => language.text("Person status updated.", "人员状态已更新。"),
+        "person-profile-updated" => language.text("Person saved.", "人员信息已保存。"),
         "exam-reset" => language.text(
             "Exam status and attempts reset.",
             "考试状态与尝试记录已重置。",
@@ -2136,12 +2412,14 @@ fn flash_message(state: &WebState, headers: &HeaderMap, language: WebLanguage) -
         "unix-account-updated" => language.text("Unix account saved.", "Unix 账号已保存。"),
         "bank-created" => language.text("Quiz bank created.", "题库已创建。"),
         "bank-imported" => language.text("Question bank imported.", "题库已导入。"),
+        "bank-deleted" => language.text("Question bank deleted.", "题库已删除。"),
         "settings-updated" => language.text("Exam settings saved.", "考试设置已保存。"),
         "question-added" => language.text("Question added.", "问题已添加。"),
         "question-updated" => language.text("Question saved.", "问题已保存。"),
         "question-deleted" => language.text("Question deleted.", "问题已删除。"),
         "test-created" => language.text("Test created.", "测试已创建。"),
         "test-updated" => language.text("Test saved.", "测试已保存。"),
+        "test-deleted" => language.text("Test deleted.", "测试已删除。"),
         "test-published" => language.text(
             "Test published. Users must pass this revision before normal SSH access.",
             "测试已发布；用户必须通过此版本后才能正常使用 SSH。",
@@ -2242,6 +2520,26 @@ mod tests {
         throttle.record(true, 200);
         assert_eq!(throttle.failures, 0);
         assert!(!throttle.is_blocked(200));
+    }
+
+    #[test]
+    fn legacy_text_bank_selection_remains_supported() {
+        let form = TestForm {
+            csrf: "token".to_owned(),
+            test_id: "onboarding".to_owned(),
+            title: "Onboarding".to_owned(),
+            bank_ids: "legacy\nhost-ssh".to_owned(),
+            pass_threshold_percent: "80".to_owned(),
+            max_attempts: "3".to_owned(),
+            question_limit: String::new(),
+            shuffle_questions: Some("on".to_owned()),
+            shuffle_choices: None,
+            bank_selections: BTreeMap::new(),
+        };
+        let parsed = parse_test_form(&form).unwrap();
+        assert_eq!(parsed.bank_ids, ["legacy", "host-ssh"]);
+        assert!(parsed.shuffle_questions);
+        assert!(!parsed.shuffle_choices);
     }
 
     fn harness() -> Harness {
@@ -2503,6 +2801,43 @@ mod tests {
         assert!(view.person.passed_at.is_none());
         assert_eq!(view.attempt_count, 0);
         assert!(view.keys.is_empty());
+
+        let response = form_post(
+            &harness.app,
+            &format!("/persons/{person_id}/profile"),
+            &session,
+            &format!("csrf={csrf}&display_name=Renamed+Mutation&unix_username=root"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            harness
+                .state
+                .db
+                .get_person(person_id)
+                .unwrap()
+                .person
+                .display_name,
+            "Renamed Mutation"
+        );
+
+        let response = form_post(
+            &harness.app,
+            &format!("/persons/{person_id}/delete"),
+            &session,
+            &format!("csrf={csrf}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = form_post(
+            &harness.app,
+            &format!("/persons/{person_id}/delete"),
+            &session,
+            &format!("csrf={csrf}&confirm=on"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(harness.state.db.list_people().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2666,6 +3001,24 @@ mod tests {
         let saved = harness.state.catalog.load("host-ssh").unwrap();
         assert_eq!(saved.title, "Host Access");
         assert_eq!(saved.questions[0].prompt, "Edited?");
+
+        let response = form_post(
+            &harness.app,
+            "/banks/host-ssh/delete",
+            &session,
+            &format!("csrf={csrf}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = form_post(
+            &harness.app,
+            "/banks/host-ssh/delete",
+            &session,
+            &format!("csrf={csrf}&confirm=on"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(harness.state.catalog.load("host-ssh").is_err());
     }
 
     #[tokio::test]
@@ -2708,11 +3061,25 @@ mod tests {
             &harness.app,
             "/tests",
             &session,
-            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding&bank_ids=legacy%0Ahost-ssh&pass_threshold_percent=80&max_attempts=3&question_limit=1&shuffle_questions=on&shuffle_choices=on"),
+            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding&bank_0=legacy&bank_1=host-ssh&pass_threshold_percent=80&max_attempts=3&question_limit=1&shuffle_questions=on&shuffle_choices=on"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(response.headers()[header::LOCATION], "/tests/onboarding");
+        let response = harness
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/tests/onboarding")
+                    .header(header::COOKIE, &session)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response_body(response).await;
+        assert!(body.contains("name=\"bank_0\" type=\"checkbox\" value=\"legacy\" checked"));
+        assert!(body.contains("name=\"bank_1\" type=\"checkbox\" value=\"host-ssh\" checked"));
         let response = form_post(
             &harness.app,
             "/tests/onboarding/publish",
@@ -2730,7 +3097,7 @@ mod tests {
             &harness.app,
             "/tests/onboarding",
             &session,
-            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding+v2&bank_ids=legacy%0Ahost-ssh&pass_threshold_percent=90&max_attempts=4&question_limit=2&shuffle_questions=on"),
+            &format!("csrf={csrf}&test_id=onboarding&title=Onboarding+v2&bank_0=legacy&bank_1=host-ssh&pass_threshold_percent=90&max_attempts=4&question_limit=2&shuffle_questions=on"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -2774,6 +3141,46 @@ mod tests {
             harness.state.db.published_test().unwrap().unwrap().revision,
             published.revision
         );
+
+        let response = form_post(
+            &harness.app,
+            "/banks/host-ssh/delete",
+            &session,
+            &format!("csrf={csrf}&confirm=on"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(harness.state.catalog.load("host-ssh").is_ok());
+
+        let response = form_post(
+            &harness.app,
+            "/tests/onboarding/delete",
+            &session,
+            &format!("csrf={csrf}&confirm=on"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = form_post(
+            &harness.app,
+            "/tests",
+            &session,
+            &format!("csrf={csrf}&test_id=temporary&title=Temporary&bank_0=legacy&pass_threshold_percent=80&max_attempts=3"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let response = form_post(
+            &harness.app,
+            "/tests/temporary/delete",
+            &session,
+            &format!("csrf={csrf}&confirm=on"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(matches!(
+            harness.state.db.get_test("temporary"),
+            Err(GateError::NotFound)
+        ));
     }
 
     #[tokio::test]

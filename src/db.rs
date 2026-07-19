@@ -238,12 +238,44 @@ impl Db {
         }
     }
 
+    pub fn update_person(
+        &self,
+        person_id: i64,
+        display_name: &str,
+        unix_username: Option<&str>,
+    ) -> GateResult<()> {
+        let display_name = validate_display_name(display_name)?;
+        if let Some(username) = unix_username {
+            validate_unix_username(username)?;
+        }
+        let connection = self.open_writable()?;
+        let result = connection.execute(
+            "UPDATE persons SET display_name = ?1, unix_username = ?2 WHERE id = ?3",
+            params![display_name, unix_username, person_id],
+        );
+        match result {
+            Ok(changed) => expect_changed(changed),
+            Err(error) if is_constraint(&error) => Err(GateError::Conflict(
+                "that Unix login is already assigned to another person".to_owned(),
+            )),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn set_person_enabled(&self, person_id: i64, enabled: bool) -> GateResult<()> {
         let connection = self.open_writable()?;
         expect_changed(connection.execute(
             "UPDATE persons SET enabled = ?1 WHERE id = ?2",
             params![enabled, person_id],
         )?)
+    }
+
+    pub fn delete_person(&self, person_id: i64) -> GateResult<()> {
+        let mut connection = self.open_writable()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        expect_changed(transaction.execute("DELETE FROM persons WHERE id = ?1", [person_id])?)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn add_key(&self, person_id: i64, public_key_line: &str) -> GateResult<KeyRecord> {
@@ -638,6 +670,52 @@ impl Db {
             .into_iter()
             .find(|test| test.id == test_id)
             .ok_or(GateError::NotFound)
+    }
+
+    pub fn tests_using_bank(&self, bank_id: &str) -> GateResult<Vec<String>> {
+        validate_bank_id(bank_id).map_err(|error| GateError::Invalid(error.to_string()))?;
+        Ok(self
+            .list_tests()?
+            .into_iter()
+            .filter(|test| test.bank_ids.iter().any(|candidate| candidate == bank_id))
+            .map(|test| test.id)
+            .collect())
+    }
+
+    pub fn delete_test(&self, test_id: &str) -> GateResult<()> {
+        validate_test_id(test_id)?;
+        let mut connection = self.open_writable()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let active = transaction.query_row(
+            "SELECT EXISTS(
+                    SELECT 1
+                    FROM active_test_publication active
+                    JOIN test_publications publication ON publication.id = active.publication_id
+                    WHERE active.singleton = 1 AND publication.test_id = ?1
+                 )",
+            [test_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if active {
+            return Err(GateError::Conflict(
+                "the active test cannot be deleted; activate another test first".to_owned(),
+            ));
+        }
+        let publication_count: u32 = transaction.query_row(
+            "SELECT count(*) FROM test_publications WHERE test_id = ?1",
+            [test_id],
+            |row| row.get(0),
+        )?;
+        if publication_count > 0 {
+            return Err(GateError::Conflict(
+                "published test history cannot be deleted".to_owned(),
+            ));
+        }
+        transaction.execute("DELETE FROM exam_attempts WHERE test_id = ?1", [test_id])?;
+        transaction.execute("DELETE FROM exam_passes WHERE test_id = ?1", [test_id])?;
+        expect_changed(transaction.execute("DELETE FROM tests WHERE id = ?1", [test_id])?)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn publish_test(&self, test_id: &str, quiz: &Quiz) -> GateResult<PublishedTest> {
@@ -1162,6 +1240,91 @@ mod tests {
         assert_eq!(key.person_id, first);
         assert!(matches!(
             db.set_person_unix_username(second, Some("root")),
+            Err(GateError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn deleting_person_cascades_identity_and_exam_records() {
+        let (_directory, db) = database(Duration::from_secs(1));
+        let person = db.create_person("Disposable", Some("root")).unwrap();
+        let key = db.add_key(person, KEY_1).unwrap();
+        let published = db.published_test().unwrap().unwrap();
+        db.record_attempt(&AttemptInput {
+            person_id: person,
+            test_id: &published.test_id,
+            revision: &published.revision,
+            score: 1,
+            total: 1,
+            passed: true,
+            answers_json: "[0]",
+            max_attempts: 3,
+        })
+        .unwrap();
+
+        db.delete_person(person).unwrap();
+        assert!(matches!(db.get_person(person), Err(GateError::NotFound)));
+        assert!(db
+            .resolve_policy("root", &key.fingerprint)
+            .unwrap()
+            .is_none());
+        let connection = db.open_read_only().unwrap();
+        for table in ["ssh_keys", "exam_attempts", "exam_passes"] {
+            let count: u32 = connection
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE person_id = ?1"),
+                    [person],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[test]
+    fn draft_test_delete_and_bank_reference_rules_are_safe() {
+        let (_directory, db) = database(Duration::from_secs(1));
+        let legacy_publication = db.published_test().unwrap().unwrap();
+        let draft = TestDefinitionInput {
+            id: "draft-test".to_owned(),
+            title: "Draft".to_owned(),
+            bank_ids: vec![LEGACY_BANK_ID.to_owned(), "host-ssh".to_owned()],
+            pass_threshold_percent: 80,
+            max_attempts: 3,
+            question_limit: None,
+            shuffle_questions: true,
+            shuffle_choices: true,
+        };
+        db.create_test(&draft).unwrap();
+        assert_eq!(db.tests_using_bank("host-ssh").unwrap(), ["draft-test"]);
+        db.delete_test("draft-test").unwrap();
+        assert!(matches!(
+            db.get_test("draft-test"),
+            Err(GateError::NotFound)
+        ));
+        assert!(matches!(
+            db.delete_test(LEGACY_BANK_ID),
+            Err(GateError::Conflict(_))
+        ));
+
+        let archived = TestDefinitionInput {
+            id: "archived-test".to_owned(),
+            title: "Archived".to_owned(),
+            bank_ids: vec![LEGACY_BANK_ID.to_owned()],
+            pass_threshold_percent: 80,
+            max_attempts: 3,
+            question_limit: None,
+            shuffle_questions: true,
+            shuffle_choices: true,
+        };
+        db.create_test(&archived).unwrap();
+        let mut archived_quiz = sample_quiz();
+        archived_quiz.title = archived.title;
+        db.publish_test("archived-test", &archived_quiz).unwrap();
+        db.activate_publication(LEGACY_BANK_ID, legacy_publication.publication_id)
+            .unwrap();
+        assert!(matches!(
+            db.delete_test("archived-test"),
             Err(GateError::Conflict(_))
         ));
     }
