@@ -16,6 +16,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
       - name: Check formatting
         run: cargo +stable fmt --all -- --check
+      - name: Check operational scripts
+        run: ./scripts/test-ops-scripts.sh
       - name: Lint
         run: cargo +stable clippy --all-targets --all-features --locked -- -D warnings
       - name: Test

@@ -33,3 +33,5 @@ jobs:
           files: |
             ${{ runner.temp }}/ssh-exam-release/ssh-exam-${{ github.ref_name }}-linux-x86_64.tar.gz
             ${{ runner.temp }}/ssh-exam-release/SHA256SUMS
+            ${{ runner.temp }}/ssh-exam-release/install.sh
+            ${{ runner.temp }}/ssh-exam-release/uninstall.sh

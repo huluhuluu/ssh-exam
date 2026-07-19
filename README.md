@@ -45,6 +45,8 @@ rules before access is granted.
 - **Loopback-only admin UI** with Argon2id passwords, CSRF protection, signed
   sessions, and atomic JSON quiz writes.
 - **Small Rust binaries** with bundled SQLite and prebuilt Linux x86_64 releases.
+- **One-command lifecycle:** verified release install, upgrade, safe uninstall,
+  and explicitly confirmed full data purge scripts.
 
 ## How It Works
 
@@ -78,75 +80,49 @@ connection normally.
 
 ## Quick Start
 
-### 1. Download a release
-
-Prebuilt releases target Linux x86_64 with glibc. Build from source for other
-architectures or incompatible glibc versions.
-
-```sh
-VERSION=v0.4.3
-curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
-curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
-sha256sum -c SHA256SUMS
-tar -xzf "ssh-exam-${VERSION}-linux-x86_64.tar.gz"
-```
-
-The archive contains three binaries, generic configuration and quiz examples,
-deployment snippets, the license, and both READMEs. It contains no runtime
-database, credentials, SSH keys, logs, or host-specific configuration.
-
-### 2. Prepare configuration
-
-Install the binaries and copy the examples to operator-owned locations:
-
-```text
-ssh-exam-key-policy  OpenSSH read-only policy helper
-ssh-exam-tui         forced terminal exam
-ssh-exam-admin       database migration and loopback Web admin
-```
-
-Edit `config.example.json` and replace every example path. `quiz_path` is the
-backwards-compatible `legacy` bank. Set `quiz_directory` to enable additional
-`*.json` banks.
-
-### 3. Initialize the database and administrator password
-
-The plaintext password is read from standard input, never from a command-line
-argument. `init` creates the database, applies migrations, publishes the
-backwards-compatible `legacy` test, generates a random session secret, and
-atomically writes `admin-auth.json` with mode `0600` on Unix.
+Prebuilt installation supports Linux x86_64 with glibc. The installer downloads
+the release archive, verifies SHA256, creates service identities and protected
+directories, installs examples and sudoers policy, initializes the database and
+administrator password, and starts the loopback Web service on systemd hosts.
 
 ```sh
-read -rsp 'Admin password: ' ADMIN_PASSWORD
-printf '\n'
-printf '%s' "$ADMIN_PASSWORD" | \
-  /usr/local/sbin/ssh-exam-admin init --config /etc/ssh-exam/config.json
-unset ADMIN_PASSWORD
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | sudo sh
 ```
 
-Rotate only the administrator password while preserving the session secret:
+It prompts twice for the new administrator password through `/dev/tty`, so the
+password is never placed in shell history or a command-line argument. Running
+the same command again upgrades binaries, applies migrations, and preserves
+configuration, authentication material, databases, question banks, people,
+keys, attempts, and publication history.
+
+Pin an exact release when repeatability matters:
 
 ```sh
-read -rsp 'New admin password: ' ADMIN_PASSWORD
-printf '\n'
-printf '%s' "$ADMIN_PASSWORD" | \
-  /usr/local/sbin/ssh-exam-admin set-admin-password \
-  --config /etc/ssh-exam/config.json
-unset ADMIN_PASSWORD
+VERSION=v0.4.4
+curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/install.sh" | \
+  sudo sh -s -- --version "$VERSION"
 ```
 
-Never deploy `examples/admin-auth.example.json`; its public placeholder values
-are unsafe. Restart the admin service after rotating the password.
-
-### 4. Initialize and open the admin
+For Docker or another non-systemd environment, let the container supervisor
+own the admin process:
 
 ```sh
-sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin serve \
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | \
+  sudo sh -s -- --service-mode none
+sudo runuser -u ssh-exam-admin -- /usr/local/sbin/ssh-exam-admin serve \
   --config /etc/ssh-exam/config.json
 ```
 
-For an existing installation, run `migrate --config ...` once before starting
-the new binary. Fresh installations already migrate during `init`.
+For unattended provisioning, pass a root-readable regular password file with
+`--admin-password-file FILE`, then remove that file immediately. Existing
+installations do not read or replace the administrator password.
+
+The installer deliberately does **not** edit or reload OpenSSH. It installs the
+reviewable SSH and sudoers snippets under `/usr/share/doc/ssh-exam/deploy/`.
+Complete the isolated test and production activation checklist below before
+copying the SSH `Match Group` configuration.
+
+### Open the admin
 
 The admin refuses non-loopback bind addresses. Reach it through an SSH tunnel:
 
@@ -167,6 +143,43 @@ Open `http://127.0.0.1:8787/`, then:
 
 Creating people and keys does not activate interception by itself. OpenSSH must
 also use the supplied `Match Group` configuration for the account.
+
+### Password rotation
+
+```sh
+read -rsp 'New admin password: ' ADMIN_PASSWORD
+printf '\n'
+printf '%s' "$ADMIN_PASSWORD" | sudo /usr/local/sbin/ssh-exam-admin \
+  set-admin-password --config /etc/ssh-exam/config.json
+unset ADMIN_PASSWORD
+sudo chown ssh-exam-admin:root /etc/ssh-exam/admin-auth.json
+sudo chmod 0600 /etc/ssh-exam/admin-auth.json
+sudo systemctl restart ssh-exam-admin.service
+```
+
+### Uninstall or completely purge
+
+First remove the reviewed SSH `Match Group`, validate the complete `sshd`
+configuration, and reload SSH. The uninstaller refuses to remove binaries while
+standard SSH configuration paths still reference `ssh-exam-key-policy`.
+
+Remove program files while preserving configuration and all runtime data:
+
+```sh
+sudo ssh-exam-uninstall
+```
+
+Explicitly remove program files, configuration, database, quizzes, service
+identities, and project groups:
+
+```sh
+sudo ssh-exam-uninstall --purge-data --confirm-purge DELETE-SSH-EXAM
+```
+
+Release archives contain three binaries, installation scripts, generic
+configuration and quiz examples, deployment snippets, the license, and both
+READMEs. They never contain runtime databases, credentials, SSH keys, logs, or
+host-specific configuration.
 
 ## Quiz Banks
 
@@ -289,9 +302,8 @@ Docker group membership.
 
 1. Keep a recovery session open and verify a second recovery login on the real
    SSH port. Keep recovery accounts outside `ssh-exam-gated`.
-2. Install the binaries, service identities, configuration, state permissions,
-   and reviewed sudoers rule. Validate it with
-   `visudo -cf deploy/sudoers.snippet`.
+2. Run the installer, then review its installed deployment snippets. Revalidate
+   the sudoers rule with `visudo -cf /etc/sudoers.d/ssh-exam`.
 3. Register a disposable person with its Unix account and key; import banks and
    publish a disposable test through the admin.
 4. Complete the isolated test workflow with the production application config.

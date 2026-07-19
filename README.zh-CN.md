@@ -39,6 +39,7 @@ Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或�
   配置控制。
 - **回环管理界面**：Argon2id 密码、CSRF 防护、签名会话、题库原子写入。
 - **Rust 小型二进制**：内置 SQLite，提供 Linux x86_64 预构建包。
+- **一键生命周期管理**：校验发布包后安装/升级，安全卸载，以及显式确认后的完整清除。
 
 ## 工作原理
 
@@ -67,71 +68,43 @@ authorized-keys 规则；任何异常都默认拒绝。
 
 ## 快速开始
 
-### 1. 下载预构建版本
-
-预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
-
-```sh
-VERSION=v0.4.3
-curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
-curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
-sha256sum -c SHA256SUMS
-tar -xzf "ssh-exam-${VERSION}-linux-x86_64.tar.gz"
-```
-
-压缩包只包含三个二进制、通用配置/题库示例、部署片段、许可证和中英文 README，
-不包含数据库、凭据、SSH 密钥、日志或机器专用配置。
-
-### 2. 准备配置
-
-安装三个二进制，并把示例复制到运维人员管理的位置：
-
-```text
-ssh-exam-key-policy  OpenSSH 只读策略程序
-ssh-exam-tui         强制执行的终端考试
-ssh-exam-admin       数据库迁移和回环 Web 管理端
-```
-
-编辑 `config.example.json`，替换所有示例路径。`quiz_path` 是兼容旧版本的
-`legacy` 题库；设置 `quiz_directory` 后可启用额外的 `*.json` 题库文件。
-
-### 3. 初始化数据库和管理员密码
-
-明文密码只从标准输入读取，不出现在命令行参数中。`init` 会创建数据库、执行迁移、
-发布兼容的 `legacy` 测试、生成随机会话密钥，并在 Unix 上以 `0600` 权限原子写入
-`admin-auth.json`。
+预构建安装支持使用 glibc 的 Linux x86_64。安装脚本会下载发布包、校验 SHA256、
+创建服务账号和受保护目录、安装示例与 sudoers 规则、初始化数据库和管理员密码，
+并在 systemd 宿主机启动回环 Web 管理服务。
 
 ```sh
-read -rsp 'Admin password: ' ADMIN_PASSWORD
-printf '\n'
-printf '%s' "$ADMIN_PASSWORD" | \
-  /usr/local/sbin/ssh-exam-admin init --config /etc/ssh-exam/config.json
-unset ADMIN_PASSWORD
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | sudo sh
 ```
 
-只修改管理员密码并保留会话密钥：
+脚本通过 `/dev/tty` 两次读取新管理员密码，密码不会进入 Shell 历史或命令行参数。
+再次执行同一命令即可升级二进制并执行迁移，同时保留配置、认证信息、数据库、题库、
+人员、公钥、尝试记录和发布历史。
+
+需要固定版本时：
 
 ```sh
-read -rsp 'New admin password: ' ADMIN_PASSWORD
-printf '\n'
-printf '%s' "$ADMIN_PASSWORD" | \
-  /usr/local/sbin/ssh-exam-admin set-admin-password \
-  --config /etc/ssh-exam/config.json
-unset ADMIN_PASSWORD
+VERSION=v0.4.4
+curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/install.sh" | \
+  sudo sh -s -- --version "$VERSION"
 ```
 
-不要直接部署 `examples/admin-auth.example.json`，其中的公开占位值并不安全。
-修改密码后重启管理服务。
-
-### 4. 初始化并打开管理端
+Docker 或其他非 systemd 环境由容器进程管理器负责运行管理端：
 
 ```sh
-sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin serve \
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | \
+  sudo sh -s -- --service-mode none
+sudo runuser -u ssh-exam-admin -- /usr/local/sbin/ssh-exam-admin serve \
   --config /etc/ssh-exam/config.json
 ```
 
-已有安装需要在启动新二进制前执行一次 `migrate --config ...`；全新安装在 `init`
-过程中已经完成迁移。
+无人值守部署可使用 `--admin-password-file FILE` 指向仅 root 可读的普通文件，安装后
+立即删除该文件。已有安装不会读取或替换管理员密码。
+
+安装脚本**不会**编辑或重载 OpenSSH。需要人工审核的 SSH 与 sudoers 片段安装在
+`/usr/share/doc/ssh-exam/deploy/`。复制 SSH `Match Group` 配置前，必须完成下文的
+隔离测试和生产启用检查。
+
+### 打开管理端
 
 管理端拒绝非回环监听地址。通过 SSH 隧道访问：
 
@@ -150,6 +123,39 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 
 创建人员和公钥本身不会启用拦截；该账号还必须命中提供的 OpenSSH
 `Match Group` 配置。
+
+### 修改管理员密码
+
+```sh
+read -rsp 'New admin password: ' ADMIN_PASSWORD
+printf '\n'
+printf '%s' "$ADMIN_PASSWORD" | sudo /usr/local/sbin/ssh-exam-admin \
+  set-admin-password --config /etc/ssh-exam/config.json
+unset ADMIN_PASSWORD
+sudo chown ssh-exam-admin:root /etc/ssh-exam/admin-auth.json
+sudo chmod 0600 /etc/ssh-exam/admin-auth.json
+sudo systemctl restart ssh-exam-admin.service
+```
+
+### 一键卸载或彻底清除
+
+首先移除已审核的 SSH `Match Group`，校验完整 `sshd` 配置并重载 SSH。如果标准 SSH
+配置路径仍引用 `ssh-exam-key-policy`，卸载脚本会拒绝删除二进制。
+
+只删除程序文件，保留配置和所有运行数据：
+
+```sh
+sudo ssh-exam-uninstall
+```
+
+显式删除程序、配置、数据库、题库、服务身份和项目组：
+
+```sh
+sudo ssh-exam-uninstall --purge-data --confirm-purge DELETE-SSH-EXAM
+```
+
+发布压缩包只包含三个二进制、安装脚本、通用配置/题库示例、部署片段、许可证和
+中英文 README，不包含数据库、凭据、SSH 密钥、日志或机器专用配置。
 
 ## 题库
 
@@ -260,8 +266,8 @@ sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
 
 1. 保持一个恢复会话，并在真实 SSH 端口验证第二个恢复登录。恢复账号不能属于
    `ssh-exam-gated`。
-2. 安装二进制、服务账号、配置、状态目录权限和检查后的 sudoers 规则。使用
-   `visudo -cf deploy/sudoers.snippet` 校验。
+2. 执行安装脚本并审核其安装的部署片段，再使用
+   `visudo -cf /etc/sudoers.d/ssh-exam` 重新校验 sudoers 规则。
 3. 通过管理端登记临时人员、其 Unix 账号和公钥，导入题库并发布临时测试。
 4. 使用生产应用配置完整执行一次隔离测试。
 5. 只把需要拦截的账号加入 `ssh-exam-gated`，再安装审核后的
