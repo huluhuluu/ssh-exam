@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 
 use crate::{
     config::AppConfig,
-    db::{AccessMode, Db, PolicyRecord},
+    db::{Db, PolicyRecord},
     keys::{fingerprint, validate_fingerprint, validate_key_type},
 };
 
@@ -12,17 +12,14 @@ use crate::{
 pub enum PolicyDecision {
     Deny,
     Pending(String),
-    PassedShell(String),
-    PassedProxyjump(String),
+    Passed(String),
 }
 
 impl PolicyDecision {
     pub fn authorized_keys_line(&self) -> Option<&str> {
         match self {
             Self::Deny => None,
-            Self::Pending(line) | Self::PassedShell(line) | Self::PassedProxyjump(line) => {
-                Some(line)
-            }
+            Self::Pending(line) | Self::Passed(line) => Some(line),
         }
     }
 }
@@ -78,30 +75,7 @@ fn render_record(
             registered_key
         )));
     }
-    match record.access_mode {
-        AccessMode::Shell => Ok(PolicyDecision::PassedShell(registered_key)),
-        AccessMode::Proxyjump => {
-            if record.permitopen.is_empty() {
-                return Ok(PolicyDecision::Deny);
-            }
-            let mut options = vec![
-                "restrict".to_owned(),
-                "port-forwarding".to_owned(),
-                format!(
-                    "command={}",
-                    authorized_option(&shell_word(&config.proxy_refuse_command)?)?
-                ),
-            ];
-            for destination in &record.permitopen {
-                options.push(format!("permitopen={}", authorized_option(destination)?));
-            }
-            Ok(PolicyDecision::PassedProxyjump(format!(
-                "{} {}",
-                options.join(","),
-                registered_key
-            )))
-        }
-    }
+    Ok(PolicyDecision::Passed(registered_key))
 }
 
 fn authorized_option(value: &str) -> Result<String> {
@@ -154,14 +128,14 @@ mod tests {
             tui_run_as: "ssh-exam-tui".to_owned(),
             sudo_path: PathBuf::from("/usr/bin/sudo"),
             tui_language: "bilingual".to_owned(),
-            proxy_refuse_command: PathBuf::from("/usr/sbin/nologin"),
+            legacy_proxy_refuse_command: None,
             admin_bind: "127.0.0.1:8787".parse::<SocketAddr>().unwrap(),
             admin_auth_path: PathBuf::from("/etc/ssh-exam/admin-auth.json"),
             busy_timeout_ms: 1_000,
         }
     }
 
-    fn setup(mode: AccessMode) -> (TempDir, Db, AppConfig, KeyRecord, i64) {
+    fn setup() -> (TempDir, Db, AppConfig, KeyRecord, i64) {
         let directory = TempDir::new().unwrap();
         let config = config(&directory);
         let db = Db::new(&config.database_path, Duration::from_secs(1));
@@ -172,15 +146,6 @@ mod tests {
             person_id: person,
             ssh_key_id: None,
             unix_username: "root".to_owned(),
-            access_mode: mode,
-            permitopen: if mode == AccessMode::Proxyjump {
-                vec![
-                    "database.example.org:5432".to_owned(),
-                    "target.example.org:22".to_owned(),
-                ]
-            } else {
-                vec![]
-            },
             bank_id: "host-ssh".to_owned(),
         })
         .unwrap();
@@ -189,7 +154,7 @@ mod tests {
 
     #[test]
     fn unknown_mismatch_and_disabled_all_deny_without_output() {
-        let (_directory, db, config, key, _) = setup(AccessMode::Shell);
+        let (_directory, db, config, key, _) = setup();
         let config_path = Path::new("/etc/ssh-exam/config.json");
         for decision in [
             evaluate(
@@ -230,7 +195,7 @@ mod tests {
 
     #[test]
     fn pending_line_has_exact_forced_exam_restrictions() {
-        let (_directory, db, config, key, _) = setup(AccessMode::Shell);
+        let (_directory, db, config, key, _) = setup();
         let decision = evaluate(
             &db,
             &config,
@@ -251,8 +216,8 @@ mod tests {
     }
 
     #[test]
-    fn passed_shell_has_no_forced_command_or_options() {
-        let (_directory, db, config, key, person) = setup(AccessMode::Shell);
+    fn passed_mapping_has_no_forced_command_or_options() {
+        let (_directory, db, config, key, person) = setup();
         pass(&db, person);
         let decision = evaluate(
             &db,
@@ -271,28 +236,8 @@ mod tests {
     }
 
     #[test]
-    fn passed_proxyjump_is_forwarding_only_and_permitopen_limited() {
-        let (_directory, db, config, key, person) = setup(AccessMode::Proxyjump);
-        pass(&db, person);
-        let decision = evaluate(
-            &db,
-            &config,
-            Path::new("/etc/ssh-exam/config.json"),
-            "root",
-            &key.fingerprint,
-            &key.key_type,
-            &key.key_base64,
-        )
-        .unwrap();
-        assert_eq!(
-            decision.authorized_keys_line(),
-            Some("restrict,port-forwarding,command=\"'/usr/sbin/nologin'\",permitopen=\"database.example.org:5432\",permitopen=\"target.example.org:22\" ssh-ed25519 aGVsbG8= ssh-exam-gate")
-        );
-    }
-
-    #[test]
     fn disabled_key_denies_at_policy_boundary() {
-        let (_directory, db, config, key, _) = setup(AccessMode::Shell);
+        let (_directory, db, config, key, _) = setup();
         db.set_key_enabled(key.id, false).unwrap();
         let decision = evaluate(
             &db,

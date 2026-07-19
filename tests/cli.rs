@@ -7,7 +7,7 @@ use std::{
 
 use ssh_exam_gate::{
     config::AppConfig,
-    db::{AccessMode, BindingInput, Db},
+    db::{BindingInput, Db},
     quiz::{BankEnvironment, Question, Quiz, QuizCatalog, LEGACY_BANK_ID},
 };
 use tempfile::TempDir;
@@ -26,7 +26,7 @@ fn test_config(directory: &TempDir) -> (std::path::PathBuf, AppConfig) {
         tui_run_as: "ssh-exam-tui".to_owned(),
         sudo_path: "/usr/bin/sudo".into(),
         tui_language: "bilingual".to_owned(),
-        proxy_refuse_command: "/usr/sbin/nologin".into(),
+        legacy_proxy_refuse_command: None,
         admin_bind: "127.0.0.1:8787".parse().unwrap(),
         admin_auth_path: directory.path().join("admin-auth.json"),
         busy_timeout_ms: 1_000,
@@ -156,8 +156,6 @@ fn tui_rejects_bank_that_does_not_match_the_mapping() {
         person_id: person,
         ssh_key_id: None,
         unix_username: "root".to_owned(),
-        access_mode: AccessMode::Shell,
-        permitopen: vec![],
         bank_id: LEGACY_BANK_ID.to_owned(),
     })
     .unwrap();

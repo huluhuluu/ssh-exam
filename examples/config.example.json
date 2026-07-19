@@ -6,7 +6,6 @@
   "tui_run_as": "ssh-exam-tui",
   "sudo_path": "/usr/bin/sudo",
   "tui_language": "bilingual",
-  "proxy_refuse_command": "/usr/sbin/nologin",
   "admin_bind": "127.0.0.1:8787",
   "admin_auth_path": "/etc/ssh-exam/admin-auth.json",
   "busy_timeout_ms": 5000

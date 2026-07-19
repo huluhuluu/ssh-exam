@@ -5,20 +5,20 @@
   "max_attempts": 3,
   "questions": [
     {
-      "prompt": "What does an Access mapping allowed destination control?",
+      "prompt": "Which information is essential when documenting a network service?",
       "choices": [
-        "The exact forwarding target for Shared ProxyJump access",
-        "The bastion SSH listener port",
-        "The admin Web listener"
+        "Its host, port, protocol, and intended access path",
+        "Only the public-key comment",
+        "The terminal color used by its operator"
       ],
       "correct_index": 0
     },
     {
-      "prompt": "Why should a forwarding destination use an explicit host and port?",
+      "prompt": "Why should a network topology distinguish listener and service ports?",
       "choices": [
-        "It limits forwarding to reviewed endpoints",
-        "It enables unrestricted shell access",
-        "It changes the server host key"
+        "They may belong to different hops and serve different purposes",
+        "They always have the same value",
+        "It changes the SSH host key"
       ],
       "correct_index": 0
     }

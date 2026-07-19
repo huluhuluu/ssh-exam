@@ -1,8 +1,7 @@
-use std::{path::Path, path::PathBuf, str::FromStr, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use nix::unistd::User;
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
@@ -15,6 +14,7 @@ use crate::quiz::LEGACY_BANK_ID;
 
 const MIGRATION_1: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_mapping_bank.sql");
+const MIGRATION_3: &str = include_str!("../migrations/0003_unified_access.sql");
 
 #[derive(Debug, Error)]
 pub enum GateError {
@@ -33,34 +33,6 @@ pub enum GateError {
 }
 
 pub type GateResult<T> = Result<T, GateError>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AccessMode {
-    Shell,
-    Proxyjump,
-}
-
-impl AccessMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Shell => "shell",
-            Self::Proxyjump => "proxyjump",
-        }
-    }
-}
-
-impl FromStr for AccessMode {
-    type Err = GateError;
-
-    fn from_str(value: &str) -> GateResult<Self> {
-        match value {
-            "shell" => Ok(Self::Shell),
-            "proxyjump" => Ok(Self::Proxyjump),
-            _ => Err(GateError::Invalid("invalid access mode".to_owned())),
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct PersonRecord {
@@ -87,8 +59,6 @@ pub struct BindingRecord {
     pub person_id: i64,
     pub ssh_key_id: Option<i64>,
     pub unix_username: String,
-    pub access_mode: AccessMode,
-    pub permitopen: Vec<String>,
     pub bank_id: String,
     pub enabled: bool,
 }
@@ -109,8 +79,6 @@ pub struct PolicyRecord {
     pub key_type: String,
     pub key_base64: String,
     pub passed: bool,
-    pub access_mode: AccessMode,
-    pub permitopen: Vec<String>,
     pub bank_id: String,
 }
 
@@ -120,7 +88,6 @@ pub struct PendingIdentity {
     pub display_name: String,
     pub passed: bool,
     pub attempt_count: u32,
-    pub access_mode: AccessMode,
     pub bank_id: String,
 }
 
@@ -129,8 +96,6 @@ pub struct BindingInput {
     pub person_id: i64,
     pub ssh_key_id: Option<i64>,
     pub unix_username: String,
-    pub access_mode: AccessMode,
-    pub permitopen: Vec<String>,
     pub bank_id: String,
 }
 
@@ -158,10 +123,6 @@ impl Db {
         }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub fn initialize(&self) -> GateResult<()> {
         let mut connection = self.open_writable()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -170,7 +131,7 @@ impl Db {
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);",
         )?;
-        for (version, migration) in [(1, MIGRATION_1), (2, MIGRATION_2)] {
+        for (version, migration) in [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)] {
             let applied = transaction
                 .query_row(
                     "SELECT 1 FROM schema_migrations WHERE version = ?1",
@@ -271,17 +232,6 @@ impl Db {
     pub fn add_binding(&self, input: &BindingInput) -> GateResult<i64> {
         validate_unix_username(&input.unix_username)?;
         validate_bank_id(&input.bank_id).map_err(|error| GateError::Invalid(error.to_string()))?;
-        let permitopen = validate_permitopen(&input.permitopen)?;
-        if input.access_mode == AccessMode::Shell && !permitopen.is_empty() {
-            return Err(GateError::Invalid(
-                "shell bindings cannot define permitopen values".to_owned(),
-            ));
-        }
-        if input.access_mode == AccessMode::Proxyjump && permitopen.is_empty() {
-            return Err(GateError::Invalid(
-                "proxyjump bindings require at least one permitopen value".to_owned(),
-            ));
-        }
 
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -311,63 +261,13 @@ impl Db {
             }
         }
 
-        let username_owner = transaction
-            .query_row(
-                "SELECT person_id FROM login_bindings
-                 WHERE enabled = 1 AND unix_username = ?1 AND access_mode = 'shell'
-                 LIMIT 1",
-                [&input.unix_username],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        if username_owner.is_some_and(|owner| owner != input.person_id) {
-            return Err(GateError::Conflict(
-                "Unix username is reserved by another person's shell binding".to_owned(),
-            ));
-        }
-        if input.access_mode == AccessMode::Shell {
-            let other_owner = transaction
-                .query_row(
-                    "SELECT person_id FROM login_bindings
-                     WHERE enabled = 1 AND unix_username = ?1 AND person_id != ?2 LIMIT 1",
-                    params![input.unix_username, input.person_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-            if other_owner.is_some() {
-                return Err(GateError::Conflict(
-                    "shell usernames must be dedicated to one person".to_owned(),
-                ));
-            }
-            let other_username = transaction
-                .query_row(
-                    "SELECT unix_username FROM login_bindings
-                     WHERE enabled = 1 AND person_id = ?1 AND access_mode = 'shell'
-                       AND unix_username != ?2 LIMIT 1",
-                    params![input.person_id, input.unix_username],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            if other_username.is_some() {
-                return Err(GateError::Conflict(
-                    "a person may have only one enabled shell username".to_owned(),
-                ));
-            }
-        }
-
         let overlapping = transaction
             .query_row(
                 "SELECT 1 FROM login_bindings
                  WHERE enabled = 1 AND person_id = ?1 AND unix_username = ?2
-                   AND access_mode = ?3
-                   AND (ssh_key_id IS NULL OR ?4 IS NULL OR ssh_key_id = ?4)
+                   AND (ssh_key_id IS NULL OR ?3 IS NULL OR ssh_key_id = ?3)
                  LIMIT 1",
-                params![
-                    input.person_id,
-                    input.unix_username,
-                    input.access_mode.as_str(),
-                    input.ssh_key_id
-                ],
+                params![input.person_id, input.unix_username, input.ssh_key_id],
                 |_| Ok(()),
             )
             .optional()?
@@ -378,20 +278,25 @@ impl Db {
             ));
         }
 
-        transaction.execute(
+        let inserted = transaction.execute(
             "INSERT INTO login_bindings(
-                person_id, ssh_key_id, unix_username, access_mode, permitopen_json, bank_id,
-                created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())",
+                person_id, ssh_key_id, unix_username, bank_id, created_at
+             ) VALUES (?1, ?2, ?3, ?4, unixepoch())",
             params![
                 input.person_id,
                 input.ssh_key_id,
                 input.unix_username,
-                input.access_mode.as_str(),
-                serde_json::to_string(&permitopen).expect("serializing strings cannot fail"),
                 input.bank_id
             ],
-        )?;
+        );
+        if let Err(error) = inserted {
+            if is_constraint(&error) {
+                return Err(GateError::Conflict(
+                    "that Access mapping already exists".to_owned(),
+                ));
+            }
+            return Err(error.into());
+        }
         let id = transaction.last_insert_rowid();
         transaction.commit()?;
         Ok(id)
@@ -410,7 +315,7 @@ impl Db {
         }
         let binding = transaction
             .query_row(
-                "SELECT person_id, ssh_key_id, unix_username, access_mode, permitopen_json, bank_id
+                "SELECT person_id, ssh_key_id, unix_username, bank_id
                  FROM login_bindings WHERE id = ?1",
                 [binding_id],
                 |row| {
@@ -419,20 +324,13 @@ impl Db {
                         row.get::<_, Option<i64>>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
                     ))
                 },
             )
             .optional()?
             .ok_or(GateError::NotFound)?;
-        let mode: AccessMode = binding.3.parse()?;
-        let permitopen: Vec<String> = serde_json::from_str(&binding.4).map_err(|error| {
-            GateError::Invalid(format!("stored permitopen JSON is invalid: {error}"))
-        })?;
         validate_unix_username(&binding.2)?;
-        validate_permitopen(&permitopen)?;
-        validate_bank_id(&binding.5).map_err(|error| GateError::Invalid(error.to_string()))?;
+        validate_bank_id(&binding.3).map_err(|error| GateError::Invalid(error.to_string()))?;
         if let Some(key_id) = binding.1 {
             let owner = transaction
                 .query_row(
@@ -447,47 +345,14 @@ impl Db {
                 ));
             }
         }
-        let shell_owner = transaction
-            .query_row(
-                "SELECT person_id FROM login_bindings
-                 WHERE id != ?1 AND enabled = 1 AND unix_username = ?2
-                   AND access_mode = 'shell' LIMIT 1",
-                params![binding_id, binding.2],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        if shell_owner.is_some_and(|owner| owner != binding.0) {
-            return Err(GateError::Conflict(
-                "Unix username is reserved by another person's shell binding".to_owned(),
-            ));
-        }
-        if mode == AccessMode::Shell {
-            let conflict = transaction
-                .query_row(
-                    "SELECT 1 FROM login_bindings
-                     WHERE id != ?1 AND enabled = 1
-                       AND ((unix_username = ?2 AND person_id != ?3)
-                         OR (person_id = ?3 AND access_mode = 'shell' AND unix_username != ?2))
-                     LIMIT 1",
-                    params![binding_id, binding.2, binding.0],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if conflict {
-                return Err(GateError::Conflict(
-                    "shell usernames must be a one-to-one person mapping".to_owned(),
-                ));
-            }
-        }
         let overlap = transaction
             .query_row(
                 "SELECT 1 FROM login_bindings
                  WHERE id != ?1 AND enabled = 1 AND person_id = ?2
-                   AND unix_username = ?3 AND access_mode = ?4
-                   AND (ssh_key_id IS NULL OR ?5 IS NULL OR ssh_key_id = ?5)
+                   AND unix_username = ?3
+                   AND (ssh_key_id IS NULL OR ?4 IS NULL OR ssh_key_id = ?4)
                  LIMIT 1",
-                params![binding_id, binding.0, binding.2, mode.as_str(), binding.1],
+                params![binding_id, binding.0, binding.2, binding.1],
                 |_| Ok(()),
             )
             .optional()?
@@ -531,7 +396,7 @@ impl Db {
         let raw = connection
             .query_row(
                 "SELECT p.id, b.unix_username, k.fingerprint, k.key_type, k.key_base64,
-                        p.passed_at IS NOT NULL, b.access_mode, b.permitopen_json, b.bank_id
+                        p.passed_at IS NOT NULL, b.bank_id
                  FROM login_bindings b
                  JOIN persons p ON p.id = b.person_id
                  JOIN ssh_keys k ON k.person_id = p.id
@@ -550,24 +415,12 @@ impl Db {
                         row.get::<_, String>(4)?,
                         row.get::<_, bool>(5)?,
                         row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, String>(8)?,
                     ))
                 },
             )
             .optional()?;
         raw.map(
-            |(
-                person_id,
-                username,
-                fingerprint,
-                key_type,
-                key_base64,
-                passed,
-                mode,
-                permits,
-                bank_id,
-            )| {
+            |(person_id, username, fingerprint, key_type, key_base64, passed, bank_id)| {
                 validate_bank_id(&bank_id)
                     .map_err(|error| GateError::Invalid(error.to_string()))?;
                 Ok(PolicyRecord {
@@ -577,10 +430,6 @@ impl Db {
                     key_type,
                     key_base64,
                     passed,
-                    access_mode: mode.parse()?,
-                    permitopen: serde_json::from_str(&permits).map_err(|error| {
-                        GateError::Invalid(format!("stored permitopen JSON is invalid: {error}"))
-                    })?,
                     bank_id,
                 })
             },
@@ -609,7 +458,6 @@ impl Db {
                     display_name: row.get(0)?,
                     passed: policy.passed,
                     attempt_count: row.get(1)?,
-                    access_mode: policy.access_mode,
                     bank_id: policy.bank_id.clone(),
                 })
             },
@@ -744,8 +592,7 @@ fn load_keys(connection: &Connection, person_id: i64) -> GateResult<Vec<KeyRecor
 
 fn load_bindings(connection: &Connection, person_id: i64) -> GateResult<Vec<BindingRecord>> {
     let mut statement = connection.prepare(
-        "SELECT id, person_id, ssh_key_id, unix_username, access_mode,
-                permitopen_json, bank_id, enabled
+        "SELECT id, person_id, ssh_key_id, unix_username, bank_id, enabled
          FROM login_bindings WHERE person_id = ?1 ORDER BY id",
     )?;
     let rows = statement.query_map([person_id], |row| {
@@ -755,23 +602,17 @@ fn load_bindings(connection: &Connection, person_id: i64) -> GateResult<Vec<Bind
             row.get::<_, Option<i64>>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-            row.get::<_, String>(6)?,
-            row.get::<_, bool>(7)?,
+            row.get::<_, bool>(5)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, person_id, ssh_key_id, unix_username, mode, permits, bank_id, enabled) = row?;
+        let (id, person_id, ssh_key_id, unix_username, bank_id, enabled) = row?;
         validate_bank_id(&bank_id).map_err(|error| GateError::Invalid(error.to_string()))?;
         Ok(BindingRecord {
             id,
             person_id,
             ssh_key_id,
             unix_username,
-            access_mode: mode.parse()?,
-            permitopen: serde_json::from_str(&permits).map_err(|error| {
-                GateError::Invalid(format!("stored permitopen JSON is invalid: {error}"))
-            })?,
             bank_id,
             enabled,
         })
@@ -817,52 +658,6 @@ pub fn validate_unix_username(value: &str) -> GateResult<()> {
     }
 }
 
-pub fn validate_permitopen(values: &[String]) -> GateResult<Vec<String>> {
-    if values.len() > 64 {
-        return Err(GateError::Invalid(
-            "at most 64 permitopen values are allowed".to_owned(),
-        ));
-    }
-    let mut clean = Vec::with_capacity(values.len());
-    for value in values {
-        if value.is_empty()
-            || value.len() > 255
-            || value
-                .bytes()
-                .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\\' | b','))
-        {
-            return Err(GateError::Invalid(format!(
-                "invalid permitopen value: {value}"
-            )));
-        }
-        let (host, port) = value
-            .rsplit_once(':')
-            .ok_or_else(|| GateError::Invalid(format!("invalid permitopen value: {value}")))?;
-        let host_valid = if host.starts_with('[') && host.ends_with(']') {
-            let address = &host[1..host.len() - 1];
-            !address.is_empty()
-                && address
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
-        } else {
-            !host.is_empty()
-                && host
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte))
-        };
-        let port_valid = port.parse::<u16>().is_ok_and(|port| port != 0);
-        if !host_valid || !port_valid {
-            return Err(GateError::Invalid(format!(
-                "invalid permitopen value: {value}"
-            )));
-        }
-        if !clean.contains(value) {
-            clean.push(value.clone());
-        }
-    }
-    Ok(clean)
-}
-
 fn expect_changed(changed: usize) -> GateResult<()> {
     if changed == 0 {
         Err(GateError::NotFound)
@@ -894,13 +689,11 @@ mod tests {
         (directory, db)
     }
 
-    fn shell_binding(person_id: i64) -> BindingInput {
+    fn binding(person_id: i64) -> BindingInput {
         BindingInput {
             person_id,
             ssh_key_id: None,
             unix_username: "root".to_owned(),
-            access_mode: AccessMode::Shell,
-            permitopen: vec![],
             bank_id: LEGACY_BANK_ID.to_owned(),
         }
     }
@@ -911,7 +704,7 @@ mod tests {
         let person = db.create_person("Alice").unwrap();
         let key_1 = db.add_key(person, KEY_1).unwrap();
         let key_2 = db.add_key(person, KEY_2).unwrap();
-        db.add_binding(&shell_binding(person)).unwrap();
+        db.add_binding(&binding(person)).unwrap();
 
         for key in [&key_1, &key_2] {
             assert!(
@@ -950,7 +743,7 @@ mod tests {
         let (_directory, db) = database(Duration::from_secs(1));
         let person = db.create_person("Alice").unwrap();
         let key = db.add_key(person, KEY_1).unwrap();
-        db.add_binding(&shell_binding(person)).unwrap();
+        db.add_binding(&binding(person)).unwrap();
         assert!(db
             .resolve_policy("root", &key.fingerprint)
             .unwrap()
@@ -978,7 +771,7 @@ mod tests {
             db.add_key(second, KEY_1),
             Err(GateError::Conflict(_))
         ));
-        let mut binding = shell_binding(second);
+        let mut binding = binding(second);
         binding.ssh_key_id = Some(key.id);
         assert!(matches!(
             db.add_binding(&binding),
@@ -1044,41 +837,33 @@ mod tests {
     }
 
     #[test]
-    fn validates_unix_users_and_permitopen() {
+    fn validates_unix_users() {
         validate_unix_username("root").unwrap();
         assert!(validate_unix_username("definitely_missing_ssh_exam_user").is_err());
-        assert_eq!(
-            validate_permitopen(&["target.example.org:5432".to_owned()]).unwrap(),
-            vec!["target.example.org:5432"]
-        );
-        assert!(validate_permitopen(&["*:22".to_owned()]).is_err());
-        assert!(validate_permitopen(&["host:0".to_owned()]).is_err());
     }
 
     #[test]
-    fn reenable_binding_revalidates_shell_username_ownership() {
+    fn reenable_binding_revalidates_overlapping_key_scope() {
         let (_directory, db) = database(Duration::from_secs(1));
-        let first = db.create_person("First").unwrap();
-        let second = db.create_person("Second").unwrap();
-        let shell_id = db.add_binding(&shell_binding(first)).unwrap();
-        db.set_binding_enabled(shell_id, false).unwrap();
+        let person = db.create_person("First").unwrap();
+        let key = db.add_key(person, KEY_1).unwrap();
+        let all_keys_id = db.add_binding(&binding(person)).unwrap();
+        db.set_binding_enabled(all_keys_id, false).unwrap();
         db.add_binding(&BindingInput {
-            person_id: second,
-            ssh_key_id: None,
+            person_id: person,
+            ssh_key_id: Some(key.id),
             unix_username: "root".to_owned(),
-            access_mode: AccessMode::Proxyjump,
-            permitopen: vec!["target.example.org:22".to_owned()],
             bank_id: LEGACY_BANK_ID.to_owned(),
         })
         .unwrap();
         assert!(matches!(
-            db.set_binding_enabled(shell_id, true),
+            db.set_binding_enabled(all_keys_id, true),
             Err(GateError::Conflict(_))
         ));
     }
 
     #[test]
-    fn migration_adds_legacy_bank_to_existing_mappings() {
+    fn migration_from_v1_adds_bank_and_unifies_access() {
         let directory = TempDir::new().unwrap();
         let db = Db::new(directory.path().join("gate.db"), Duration::from_secs(1));
         let connection = db.open_writable().unwrap();
@@ -1108,6 +893,43 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(versions, 2);
+        assert_eq!(versions, 3);
+    }
+
+    #[test]
+    fn migration_from_v2_preserves_distinct_mappings_and_deduplicates_modes() {
+        let directory = TempDir::new().unwrap();
+        let db = Db::new(directory.path().join("gate.db"), Duration::from_secs(1));
+        let connection = db.open_writable().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);\n\
+                 INSERT INTO schema_migrations(version) VALUES (1), (2);",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATION_1).unwrap();
+        connection.execute_batch(MIGRATION_2).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO persons(id, display_name, created_at) VALUES\n\
+                     (1, 'First', 1), (2, 'Second', 1);\n\
+                 INSERT INTO login_bindings(\n\
+                     person_id, unix_username, access_mode, permitopen_json, bank_id, enabled, created_at\n\
+                 ) VALUES\n\
+                     (1, 'root', 'shell', '[]', 'legacy', 0, 1),\n\
+                     (1, 'root', 'proxyjump', '[\"target.example.org:22\"]', 'host-ssh', 1, 2),\n\
+                     (2, 'root', 'proxyjump', '[\"target.example.org:22\"]', 'network-topology', 1, 3);",
+            )
+            .unwrap();
+        drop(connection);
+
+        db.initialize().unwrap();
+        let views = db.list_people().unwrap();
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].bindings.len(), 1);
+        assert_eq!(views[0].bindings[0].bank_id, "host-ssh");
+        assert!(views[0].bindings[0].enabled);
+        assert_eq!(views[1].bindings.len(), 1);
+        assert_eq!(views[1].bindings[0].bank_id, "network-topology");
     }
 }

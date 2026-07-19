@@ -23,11 +23,11 @@
       "correct_index": 0
     },
     {
-      "prompt": "Which action is appropriate on a shared proxyjump account?",
+      "prompt": "What should you verify before using a shared server?",
       "choices": [
-        "Use it only for approved forwarding destinations",
-        "Start a local bastion shell",
-        "Upload files over SFTP"
+        "The local usage policy and the Unix account assigned to you",
+        "Only the public-key comment",
+        "That another user is already logged in"
       ],
       "correct_index": 0
     },

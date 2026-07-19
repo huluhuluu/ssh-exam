@@ -14,8 +14,8 @@
 </div>
 
 SSH Exam Gate sits behind OpenSSH's public-key lookup. A new user receives a
-terminal exam; a user who passes receives the access profile assigned by an
-administrator. It is designed for laboratories, GPU servers, bastions, and
+terminal exam; a user who passes reconnects with ordinary OpenSSH behavior.
+It is designed for laboratories, GPU servers, bastions, and
 other shared Linux environments where users should understand local operating
 rules before access is granted.
 
@@ -32,7 +32,8 @@ rules before access is granted.
 - **Bilingual Web and TUI** with English, Chinese, and bilingual modes.
 - **Key-based identity** using Unix account + SHA256 fingerprint; key comments
   and email-like labels are metadata only.
-- **Two post-pass access profiles:** normal SSH or tightly scoped forwarding.
+- **Normal SSH after passing:** shell, commands, VS Code, and forwarding remain
+  governed by the server's existing `sshd` configuration.
 - **Loopback-only admin UI** with Argon2id passwords, CSRF protection, signed
   sessions, and atomic JSON quiz writes.
 - **Small Rust binaries** with bundled SQLite and prebuilt Linux x86_64 releases.
@@ -45,8 +46,7 @@ flowchart LR
     S -->|AuthorizedKeysCommand| P[ssh-exam-key-policy]
     P -->|Pending| T[Forced PTY exam]
     T --> D[(SQLite)]
-    P -->|Passed: shell| H[Normal SSH session]
-    P -->|Passed: forwarding only| J[Restricted TCP forwarding]
+    P -->|Passed| H[Normal SSH session]
     A[Loopback Web admin] --> D
     A --> Q[JSON quiz banks]
 ```
@@ -56,22 +56,15 @@ validates the requested Unix account, fingerprint, key type, key blob, person,
 and Access mapping before it emits an authorized-keys line. It fails closed.
 
 Pending users receive `restrict,pty` plus a forced `ssh-exam-tui` command.
-Passed users receive the post-pass profile selected by the Access mapping.
+Passed users receive the registered public key without forced-command or
+forwarding restrictions, so the existing `sshd` configuration governs the
+connection normally.
 
-## Access Profiles
-
-The exam answers **who may proceed**. The access profile answers **what that
-person may do after passing**. They are intentionally separate controls.
-
-| Profile | Shell / commands / PTY | TCP forwarding | Intended use |
-|---|---:|---:|---|
-| Normal shell | Allowed according to `sshd` | Normal SSH behavior | A dedicated Linux account used interactively, including VS Code Remote-SSH |
-| Forwarding only (ProxyJump) | Denied | Only exact `permitopen` destinations | A shared bastion account that must never become a shared shell account |
-
-Both profiles require a passed exam. If every user should receive an ordinary
-SSH session, create only **Normal shell** mappings. Forwarding-only mode exists
-for least privilege: passing an exam should not turn a shared jump account into
-an interactive server account or an unrestricted network tunnel.
+> [!WARNING]
+> Upgrading from `v0.2.x` intentionally converts every former forwarding-only
+> mapping into a normal mapping. Those users can receive shell, command, SFTP,
+> VS Code, and forwarding capabilities allowed by `sshd` and the Unix account.
+> Review old ProxyJump mappings before deploying `v0.3.0`.
 
 ## Quick Start
 
@@ -81,7 +74,7 @@ Prebuilt releases target Linux x86_64 with glibc. Build from source for other
 architectures or incompatible glibc versions.
 
 ```sh
-VERSION=v0.2.1
+VERSION=v0.3.0
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -161,7 +154,7 @@ Open `http://127.0.0.1:8787/`, then:
 1. Create a person.
 2. Register one or more public keys.
 3. Create an Access mapping for an existing Unix account.
-4. Select a quiz bank and post-pass access profile.
+4. Select the quiz bank required by that mapping.
 5. Reset the person's exam whenever another attempt is required.
 
 Creating a person or mapping still does not activate OpenSSH interception.
@@ -281,9 +274,7 @@ ssh -p <SSH_PORT> -t person-account@bastion.example.org
 # Complete the exam; the connection closes.
 ```
 
-After passing a Normal shell mapping, reconnect with VS Code normally. For a
-forwarding-only mapping, enroll directly with `ssh -t` before using the account
-as a `ProxyJump` host.
+After passing, reconnect with VS Code normally.
 
 ## Security Model
 
@@ -292,8 +283,8 @@ as a `ProxyJump` host.
 - Policy output is emitted only for enabled people, keys, and mappings.
 - The admin is loopback-only and uses Argon2id, signed HttpOnly cookies, CSRF
   tokens, and one-time signed flash messages.
-- Shell usernames are exclusive to one person. Forwarding-only usernames may
-  be shared, but wildcard destinations are rejected.
+- An Access mapping may apply to every registered key for a person or to one
+  selected device key.
 - Pass state is currently person-level for backwards compatibility: all enabled
   keys and mappings for the person inherit a pass.
 - Keep a recovery account outside the gated group. The gate fails closed, so a
@@ -319,7 +310,7 @@ visudo -cf deploy/sudoers.snippet
 
 | Symptom | Check |
 |---|---|
-| Normal shell appears before the exam | Effective `Match Group`, group membership, mapping, person pass state, and `%u/%f/%t/%k` command arguments |
+| A normal session appears before the exam | Effective `Match Group`, group membership, mapping, person pass state, and `%u/%f/%t/%k` command arguments |
 | Public key is denied | Registered fingerprint and key material, enabled flags, database permissions, and fail-closed errors in SSH logs |
 | TUI does not appear in VS Code | Complete enrollment with `ssh -t` in a real terminal |
 | Test port works only inside Docker | Publish the port or forward it through an existing SSH connection |

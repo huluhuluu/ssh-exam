@@ -13,8 +13,8 @@
 
 </div>
 
-SSH Exam Gate 接入 OpenSSH 公钥查询流程。新用户先进入终端考试；通过后，再获得
-管理员为其设置的访问权限。它适用于实验室、GPU 服务器、堡垒机等多人共享的
+SSH Exam Gate 接入 OpenSSH 公钥查询流程。新用户先进入终端考试；通过后，重新
+连接即可恢复普通 OpenSSH 行为。它适用于实验室、GPU 服务器、堡垒机等多人共享的
 Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或本机使用规范。
 
 > [!IMPORTANT]
@@ -28,7 +28,8 @@ Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或�
 - **多文件题库**：可分别维护宿主机、Docker、网络和通用知识题目。
 - **中英双语**：Web 与 TUI 支持英文、中文和双语模式。
 - **公钥身份识别**：使用 Unix 账号 + SHA256 指纹；公钥注释和邮箱仅是标签。
-- **两种通过后权限**：正常 SSH，或受严格限制的仅转发模式。
+- **通过后恢复普通 SSH**：Shell、远程命令、VS Code 和转发继续由现有 `sshd`
+  配置控制。
 - **回环管理界面**：Argon2id 密码、CSRF 防护、签名会话、题库原子写入。
 - **Rust 小型二进制**：内置 SQLite，提供 Linux x86_64 预构建包。
 
@@ -40,8 +41,7 @@ flowchart LR
     S -->|AuthorizedKeysCommand| P[ssh-exam-key-policy]
     P -->|待考试| T[强制 PTY 考试]
     T --> D[(SQLite)]
-    P -->|已通过：Shell| H[正常 SSH 会话]
-    P -->|已通过：仅转发| J[受限 TCP 转发]
+    P -->|已通过| H[正常 SSH 会话]
     A[回环 Web 管理端] --> D
     A --> Q[JSON 题库]
 ```
@@ -50,24 +50,13 @@ OpenSSH 把 `%u`、`%f`、`%t`、`%k` 交给 `ssh-exam-key-policy`。策略程�
 核对 Unix 账号、公钥指纹、类型、内容、人员和访问映射，全部匹配后才输出一行
 authorized-keys 规则；任何异常都默认拒绝。
 
-待考试用户收到 `restrict,pty` 和强制执行的 `ssh-exam-tui` 命令；通过后收到
-访问映射所选择的权限。
+待考试用户收到 `restrict,pty` 和强制执行的 `ssh-exam-tui` 命令；通过后策略只
+返回登记的公钥，不再附加强制命令或转发限制，连接由现有 `sshd` 配置正常处理。
 
-## 通过后的访问模式
-
-考试解决的是“**谁可以继续**”，访问模式解决的是“**通过后可以做什么**”。
-这两个控制必须分开。
-
-| 模式 | Shell / 命令 / PTY | TCP 转发 | 适用场景 |
-|---|---:|---:|---|
-| 正常 Shell | 按 `sshd` 配置允许 | 保持正常 SSH 行为 | 每人独立的 Linux 账号、交互终端、VS Code Remote-SSH |
-| 仅转发（ProxyJump） | 禁止 | 只能访问精确的 `permitopen` 目标 | 多人共用的堡垒机跳板账号，不能获得堡垒机 Shell |
-
-两种模式都必须先通过考试。如果所有用户都应该正常登录服务器，只创建
-**正常 Shell** 映射即可，不必使用 ProxyJump 模式。
-
-仅转发模式是最小权限设计：通过考试不代表一个共享跳板账号应当获得交互 Shell，
-也不代表用户可以把堡垒机当作访问任意内网目标的隧道。
+> [!WARNING]
+> 从 `v0.2.x` 升级时，原有“仅转发”映射会被有意转换为普通映射。这些用户将获得
+> Unix 账号和 `sshd` 所允许的 Shell、远程命令、SFTP、VS Code 和转发能力。
+> 部署 `v0.3.0` 前必须复核原有 ProxyJump 映射。
 
 ## 快速开始
 
@@ -76,7 +65,7 @@ authorized-keys 规则；任何异常都默认拒绝。
 预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
 
 ```sh
-VERSION=v0.2.1
+VERSION=v0.3.0
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
 sha256sum -c SHA256SUMS
@@ -152,7 +141,7 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 1. 创建人员。
 2. 登记一个或多个公钥。
 3. 为已有 Unix 账号创建访问映射。
-4. 选择题库和通过后的访问模式。
+4. 选择该访问映射要求完成的题库。
 5. 需要重新考试时，在 People 页面重置考试状态。
 
 创建人员或访问映射仍然不会自动启用 OpenSSH 拦截。
@@ -265,8 +254,7 @@ ssh -p <SSH_PORT> -t person-account@bastion.example.org
 # 完成考试后，连接会关闭。
 ```
 
-正常 Shell 映射通过后，可照常使用 VS Code Remote-SSH。仅转发映射需要先用
-`ssh -t` 直接完成考试，再把该账号配置为 `ProxyJump`。
+通过后，可照常使用 VS Code Remote-SSH。
 
 ## 安全模型
 
@@ -274,7 +262,7 @@ ssh -p <SSH_PORT> -t person-account@bastion.example.org
 - 只有人员、公钥和访问映射都启用时，策略程序才输出授权规则。
 - 管理端仅监听回环地址，使用 Argon2id、签名 HttpOnly Cookie、CSRF Token 和
   一次性签名提示。
-- 正常 Shell 用户名只能属于一个人；仅转发用户名可以共享，但禁止通配目标。
+- 访问映射可以应用于人员的所有已登记密钥，也可以只应用于一个指定设备密钥。
 - 为兼容旧版本，通过状态目前属于人员；该人员所有已启用密钥和映射继承通过状态。
 - 必须保留不受门禁控制的恢复账号。策略默认拒绝，因此数据库路径或权限错误会让
   被门禁控制的公钥登录失败。

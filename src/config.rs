@@ -18,8 +18,9 @@ pub struct AppConfig {
     pub sudo_path: PathBuf,
     #[serde(default = "default_tui_language")]
     pub tui_language: String,
-    #[serde(default = "default_refuse_command")]
-    pub proxy_refuse_command: PathBuf,
+    #[doc(hidden)]
+    #[serde(default, rename = "proxy_refuse_command", skip_serializing)]
+    pub legacy_proxy_refuse_command: Option<PathBuf>,
     #[serde(default = "default_admin_bind")]
     pub admin_bind: SocketAddr,
     pub admin_auth_path: PathBuf,
@@ -46,10 +47,6 @@ fn default_tui_language() -> String {
 
 fn default_tui_run_as() -> String {
     "ssh-exam-tui".to_owned()
-}
-
-fn default_refuse_command() -> PathBuf {
-    PathBuf::from("/usr/sbin/nologin")
 }
 
 fn default_admin_bind() -> SocketAddr {
@@ -80,7 +77,6 @@ impl AppConfig {
             ("quiz_path", &self.quiz_path),
             ("tui_path", &self.tui_path),
             ("sudo_path", &self.sudo_path),
-            ("proxy_refuse_command", &self.proxy_refuse_command),
             ("admin_auth_path", &self.admin_auth_path),
         ] {
             if !path.is_absolute() {
@@ -174,11 +170,35 @@ mod tests {
             tui_run_as: "ssh-exam-tui".to_owned(),
             sudo_path: "/usr/bin/sudo".into(),
             tui_language: "bilingual".to_owned(),
-            proxy_refuse_command: "/usr/sbin/nologin".into(),
+            legacy_proxy_refuse_command: None,
             admin_bind: "0.0.0.0:8787".parse().unwrap(),
             admin_auth_path: "/etc/ssh-exam/test-auth.json".into(),
             busy_timeout_ms: 5_000,
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_but_does_not_serialize_legacy_proxy_refuse_command() {
+        let raw = br#"{
+            "database_path": "/var/lib/ssh-exam/test.db",
+            "quiz_path": "/var/lib/ssh-exam/quiz.json",
+            "tui_path": "/usr/bin/ssh-exam-tui",
+            "tui_run_as": "ssh-exam-tui",
+            "sudo_path": "/usr/bin/sudo",
+            "tui_language": "bilingual",
+            "proxy_refuse_command": "/usr/sbin/nologin",
+            "admin_bind": "127.0.0.1:8787",
+            "admin_auth_path": "/etc/ssh-exam/admin-auth.json",
+            "busy_timeout_ms": 5000
+        }"#;
+        let config: AppConfig = serde_json::from_slice(raw).unwrap();
+        assert_eq!(
+            config.legacy_proxy_refuse_command,
+            Some(PathBuf::from("/usr/sbin/nologin"))
+        );
+        assert!(!serde_json::to_string(&config)
+            .unwrap()
+            .contains("proxy_refuse_command"));
     }
 }

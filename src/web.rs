@@ -127,7 +127,7 @@ define_labels! {
     banks => ("Banks", "题库"),
     access_model => ("Access model", "访问模型"),
     manage_people => ("Manage people", "管理人员"),
-    access_help => ("An Access mapping connects a registered person or device key to an existing Unix account, access type, and exam bank. It never configures the SSH listener port.", "访问映射将注册人员或设备密钥关联到现有 Unix 账号、访问类型和考试题库；它不会配置 SSH 监听端口。"),
+    access_help => ("An Access mapping connects a registered person or device key to an existing Unix account and exam bank. Passed mappings use ordinary OpenSSH behavior and never configure the listener port.", "访问映射将注册人员或设备密钥关联到现有 Unix 账号和考试题库；通过后恢复普通 OpenSSH 行为，且不会配置监听端口。"),
     people_help => ("Registered identities, device keys, inherited exam status, and Access mappings.", "注册身份、设备密钥、继承的考试状态与访问映射。"),
     create_person => ("Create person", "创建人员"),
     create_person_help => ("Pass status belongs to the person and is inherited by every enabled registered key.", "通过状态属于人员，并由其所有已启用的注册密钥继承。"),
@@ -156,15 +156,11 @@ define_labels! {
     remove => ("Remove", "移除"),
     public_key => ("Public key", "公钥"),
     add_device_key => ("Add device key", "添加设备密钥"),
-    mapping_help => ("Map this person or one device key to an existing Unix login, access type, and exam bank. Allowed destinations apply only to forwarding-only mappings.", "将此人员或某个设备密钥映射到现有 Unix 登录账号、访问类型与考试题库。允许的目标仅适用于仅转发映射。"),
+    mapping_help => ("Map this person or one device key to an existing Unix login and exam bank. After passing, OpenSSH handles the connection normally.", "将此人员或某个设备密钥映射到现有 Unix 登录账号和考试题库；通过后由 OpenSSH 正常处理连接。"),
     no_mappings => ("No Access mappings are configured for this person.", "此人员尚未配置访问映射。"),
     unix_login => ("Unix login account", "Unix 登录账号"),
-    access_type => ("Access type", "访问类型"),
     scope => ("Scope", "范围"),
-    allowed_destinations => ("Allowed destinations", "允许的目标"),
     action => ("Action", "操作"),
-    normal_shell => ("Normal shell", "普通 Shell"),
-    shared_proxyjump => ("Forwarding only (ProxyJump)", "仅转发（ProxyJump）"),
     all_registered_keys => ("All registered keys", "所有注册密钥"),
     selected_key => ("Selected key", "指定密钥"),
     add_mapping => ("Add Access mapping", "添加访问映射"),
@@ -285,9 +281,7 @@ struct PersonAdminView {
 struct MappingAdminView {
     id: i64,
     unix_username: String,
-    access_type: &'static str,
     scope: String,
-    allowed_destinations: String,
     bank_id: String,
     enabled: bool,
 }
@@ -355,9 +349,7 @@ struct AddKeyForm {
 struct AddBindingForm {
     csrf: String,
     unix_username: String,
-    access_mode: String,
     ssh_key_id: String,
-    permitopen: String,
     bank_id: String,
 }
 
@@ -695,7 +687,6 @@ async fn add_binding(
         state.catalog.load(&form.bank_id).map_err(|error| {
             GateError::Invalid(format!("selected quiz bank is unavailable: {error}"))
         })?;
-        let mode = form.access_mode.parse()?;
         let ssh_key_id = if form.ssh_key_id.trim().is_empty() {
             None
         } else {
@@ -705,21 +696,12 @@ async fn add_binding(
                     .map_err(|_| GateError::Invalid("invalid SSH key selection".to_owned()))?,
             )
         };
-        let permitopen = form
-            .permitopen
-            .split([',', '\n'])
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect();
         state
             .db
             .add_binding(&BindingInput {
                 person_id: id,
                 ssh_key_id,
                 unix_username: form.unix_username.clone(),
-                access_mode: mode,
-                permitopen,
                 bank_id: form.bank_id.clone(),
             })
             .map(|_| ())
@@ -1232,26 +1214,7 @@ fn person_admin_view(item: PersonView, language: WebLanguage) -> PersonAdminView
             MappingAdminView {
                 id: binding.id,
                 unix_username: binding.unix_username,
-                access_type: match binding.access_mode {
-                    crate::db::AccessMode::Shell => match language {
-                        WebLanguage::En => "Normal shell",
-                        WebLanguage::Zh => "普通 Shell",
-                        WebLanguage::Bilingual => "Normal shell / 普通 Shell",
-                    },
-                    crate::db::AccessMode::Proxyjump => match language {
-                        WebLanguage::En => "Forwarding only (ProxyJump)",
-                        WebLanguage::Zh => "仅转发（ProxyJump）",
-                        WebLanguage::Bilingual => {
-                            "Forwarding only (ProxyJump) / 仅转发（ProxyJump）"
-                        }
-                    },
-                },
                 scope,
-                allowed_destinations: if binding.permitopen.is_empty() {
-                    language.text("Not applicable", "不适用")
-                } else {
-                    binding.permitopen.join(", ")
-                },
                 bank_id: binding.bank_id,
                 enabled: binding.enabled,
             }
@@ -1740,9 +1703,7 @@ mod tests {
             &harness.app,
             &format!("/persons/{person_id}/bindings"),
             &session,
-            &format!(
-                "csrf={csrf}&unix_username=missing_exam_user&access_mode=shell&ssh_key_id=&permitopen=&bank_id=legacy"
-            ),
+            &format!("csrf={csrf}&unix_username=missing_exam_user&ssh_key_id=&bank_id=legacy"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1782,7 +1743,7 @@ mod tests {
             ),
             (
                 format!("/persons/{person_id}/bindings"),
-                format!("csrf={csrf}&unix_username=root&access_mode=shell&ssh_key_id=&permitopen=&bank_id=legacy"),
+                format!("csrf={csrf}&unix_username=root&ssh_key_id=&bank_id=legacy"),
             ),
         ] {
             assert_eq!(
@@ -1982,7 +1943,7 @@ mod tests {
             &harness.app,
             &format!("/persons/{person_id}/bindings"),
             &session,
-            &format!("csrf={csrf}&unix_username=root&access_mode=shell&ssh_key_id=&permitopen=&bank_id=host-ssh"),
+            &format!("csrf={csrf}&unix_username=root&ssh_key_id=&bank_id=host-ssh"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
