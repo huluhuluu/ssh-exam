@@ -156,7 +156,7 @@ define_labels! {
     remove => ("Remove", "移除"),
     public_key => ("Public key", "公钥"),
     add_device_key => ("Add device key", "添加设备密钥"),
-    mapping_help => ("Map this person or one device key to an existing Unix login, access type, and exam bank. Allowed destinations apply only to Shared ProxyJump.", "将此人员或某个设备密钥映射到现有 Unix 登录账号、访问类型与考试题库。允许的目标仅适用于共享 ProxyJump。"),
+    mapping_help => ("Map this person or one device key to an existing Unix login, access type, and exam bank. Allowed destinations apply only to forwarding-only mappings.", "将此人员或某个设备密钥映射到现有 Unix 登录账号、访问类型与考试题库。允许的目标仅适用于仅转发映射。"),
     no_mappings => ("No Access mappings are configured for this person.", "此人员尚未配置访问映射。"),
     unix_login => ("Unix login account", "Unix 登录账号"),
     access_type => ("Access type", "访问类型"),
@@ -164,7 +164,7 @@ define_labels! {
     allowed_destinations => ("Allowed destinations", "允许的目标"),
     action => ("Action", "操作"),
     normal_shell => ("Normal shell", "普通 Shell"),
-    shared_proxyjump => ("Shared ProxyJump", "共享 ProxyJump"),
+    shared_proxyjump => ("Forwarding only (ProxyJump)", "仅转发（ProxyJump）"),
     all_registered_keys => ("All registered keys", "所有注册密钥"),
     selected_key => ("Selected key", "指定密钥"),
     add_mapping => ("Add Access mapping", "添加访问映射"),
@@ -1239,9 +1239,11 @@ fn person_admin_view(item: PersonView, language: WebLanguage) -> PersonAdminView
                         WebLanguage::Bilingual => "Normal shell / 普通 Shell",
                     },
                     crate::db::AccessMode::Proxyjump => match language {
-                        WebLanguage::En => "Shared ProxyJump",
-                        WebLanguage::Zh => "共享 ProxyJump",
-                        WebLanguage::Bilingual => "Shared ProxyJump / 共享 ProxyJump",
+                        WebLanguage::En => "Forwarding only (ProxyJump)",
+                        WebLanguage::Zh => "仅转发（ProxyJump）",
+                        WebLanguage::Bilingual => {
+                            "Forwarding only (ProxyJump) / 仅转发（ProxyJump）"
+                        }
                     },
                 },
                 scope,

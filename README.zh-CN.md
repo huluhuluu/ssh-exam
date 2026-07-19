@@ -1,85 +1,212 @@
+<div align="center">
+
 # SSH Exam Gate
 
-[English](README.md)
+**让指定 SSH 公钥先完成知识考试，再获得服务器访问权限。**
 
-SSH Exam Gate 在指定的 OpenSSH 公钥登录前设置一个选择题考试。身份由请求的
-Unix 账号和所提交公钥的 SHA256 指纹共同确定。密钥注释和类似邮箱的标签仅作为
-元数据，不参与身份判断。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-本仓库**不会**编辑、重载、重启或以其他方式更改正在运行的 `sshd`。安装二进制、
-启动管理端或创建访问映射都不会自动启用拦截。只有运维人员安装并验证提供的
-`Match Group` 配置后，OpenSSH 才会调用本系统。
+[![Release](https://img.shields.io/github/v/release/huluhuluu/ssh-exam)](https://github.com/huluhuluu/ssh-exam/releases)
+[![Release build](https://github.com/huluhuluu/ssh-exam/actions/workflows/release.yml/badge.svg)](https://github.com/huluhuluu/ssh-exam/actions/workflows/release.yml)
+[![License](https://img.shields.io/github/license/huluhuluu/ssh-exam)](LICENSE)
+[![Rust](https://img.shields.io/badge/implemented%20in-Rust-000000?logo=rust)](https://www.rust-lang.org/)
 
-## 架构
+</div>
+
+SSH Exam Gate 接入 OpenSSH 公钥查询流程。新用户先进入终端考试；通过后，再获得
+管理员为其设置的访问权限。它适用于实验室、GPU 服务器、堡垒机等多人共享的
+Linux 环境，用考试确认用户已经了解 SSH、Docker、网络拓扑或本机使用规范。
+
+> [!IMPORTANT]
+> 安装或启动 SSH Exam Gate **不会**修改正在运行的 `sshd`。只有运维人员安装、
+> 校验并重载提供的 `Match Group` 配置后，拦截才会生效。必须保留一个不属于该组、
+> 且已经验证可登录的恢复账号。
+
+## 功能亮点
+
+- **首次登录 TUI 考试**：拦截指定的 OpenSSH 公钥登录。
+- **多文件题库**：可分别维护宿主机、Docker、网络和通用知识题目。
+- **中英双语**：Web 与 TUI 支持英文、中文和双语模式。
+- **公钥身份识别**：使用 Unix 账号 + SHA256 指纹；公钥注释和邮箱仅是标签。
+- **两种通过后权限**：正常 SSH，或受严格限制的仅转发模式。
+- **回环管理界面**：Argon2id 密码、CSRF 防护、签名会话、题库原子写入。
+- **Rust 小型二进制**：内置 SQLite，提供 Linux x86_64 预构建包。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    C[SSH 客户端] --> S[OpenSSH sshd]
+    S -->|AuthorizedKeysCommand| P[ssh-exam-key-policy]
+    P -->|待考试| T[强制 PTY 考试]
+    T --> D[(SQLite)]
+    P -->|已通过：Shell| H[正常 SSH 会话]
+    P -->|已通过：仅转发| J[受限 TCP 转发]
+    A[回环 Web 管理端] --> D
+    A --> Q[JSON 题库]
+```
+
+OpenSSH 把 `%u`、`%f`、`%t`、`%k` 交给 `ssh-exam-key-policy`。策略程序依次
+核对 Unix 账号、公钥指纹、类型、内容、人员和访问映射，全部匹配后才输出一行
+authorized-keys 规则；任何异常都默认拒绝。
+
+待考试用户收到 `restrict,pty` 和强制执行的 `ssh-exam-tui` 命令；通过后收到
+访问映射所选择的权限。
+
+## 通过后的访问模式
+
+考试解决的是“**谁可以继续**”，访问模式解决的是“**通过后可以做什么**”。
+这两个控制必须分开。
+
+| 模式 | Shell / 命令 / PTY | TCP 转发 | 适用场景 |
+|---|---:|---:|---|
+| 正常 Shell | 按 `sshd` 配置允许 | 保持正常 SSH 行为 | 每人独立的 Linux 账号、交互终端、VS Code Remote-SSH |
+| 仅转发（ProxyJump） | 禁止 | 只能访问精确的 `permitopen` 目标 | 多人共用的堡垒机跳板账号，不能获得堡垒机 Shell |
+
+两种模式都必须先通过考试。如果所有用户都应该正常登录服务器，只创建
+**正常 Shell** 映射即可，不必使用 ProxyJump 模式。
+
+仅转发模式是最小权限设计：通过考试不代表一个共享跳板账号应当获得交互 Shell，
+也不代表用户可以把堡垒机当作访问任意内网目标的隧道。
+
+## 快速开始
+
+### 1. 下载预构建版本
+
+预构建包面向使用 glibc 的 Linux x86_64。其他架构或 glibc 不兼容时请从源码构建。
+
+```sh
+VERSION=v0.2.1
+curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam-${VERSION}-linux-x86_64.tar.gz"
+curl -fLO "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/SHA256SUMS"
+sha256sum -c SHA256SUMS
+tar -xzf "ssh-exam-${VERSION}-linux-x86_64.tar.gz"
+```
+
+压缩包只包含三个二进制、通用配置/题库示例、部署片段、许可证和中英文 README，
+不包含数据库、凭据、SSH 密钥、日志或机器专用配置。
+
+### 2. 准备配置
+
+安装三个二进制，并把示例复制到运维人员管理的位置：
 
 ```text
-SSH 公钥
-  -> OpenSSH AuthorizedKeysCommand（%u、%f、%t、%k）
-  -> ssh-exam-key-policy（只读 SQLite 策略）
-     -> 待考试：受限 PTY + 强制 ssh-exam-tui 命令
-     -> 已通过 Shell：注册密钥 + 正常 Shell 语义
-     -> 已通过 ProxyJump：仅转发 + 精确 permitopen 目标
-
-回环管理端 -> ssh-exam-admin -> SQLite + 原子 JSON 题库写入
+ssh-exam-key-policy  OpenSSH 只读策略程序
+ssh-exam-tui         强制执行的终端考试
+ssh-exam-admin       数据库迁移和回环 Web 管理端
 ```
 
-- `ssh-exam-key-policy` 默认拒绝，仅为已启用的人员、密钥和访问映射输出
-  authorized-keys 行。
-- `ssh-exam-tui` 在写入尝试记录前验证 `SUDO_USER`、映射的账号/指纹/题库、
-  尝试次数和通过状态。
-- `ssh-exam-admin` 使用服务端渲染、CSRF 防护和双语界面，并拒绝非回环监听地址。
-- SQLite 保存人员、密钥、映射、尝试记录和人员级通过状态。映射行选择题库，
-  旧映射迁移后默认使用 `legacy`。
-- 题库 JSON 使用同目录临时文件、同步和原子重命名写入。
+编辑 `config.example.json`，替换所有示例路径。`quiz_path` 是兼容旧版本的
+`legacy` 题库；设置 `quiz_directory` 后可启用额外的 `*.json` 题库文件。
 
-为保持兼容，通过状态仍属于人员：该人员所有已启用的密钥和映射都会继承通过
-结果。待考试连接使用当前访问映射选择的题库。
+### 3. 初始化管理员密码
 
-## 预编译发布包
-
-版本标签会在 [GitHub Releases](https://github.com/huluhuluu/ssh-exam/releases)
-发布两个文件：
-
-- `ssh-exam-<VERSION>-linux-x86_64.tar.gz`
-- `SHA256SUMS`
-
-压缩包面向 Linux x86_64（`x86_64-unknown-linux-gnu`），包含三个已剥离符号的
-二进制、示例配置/题库、部署片段、许可证和中英文 README，不包含数据库、SSH
-密钥、缓存、日志或运行时数据。
-
-解压前验证校验和：
+在目标机器上生成密码哈希。明文密码只从当前终端读取，不写入
+`admin-auth.json`。
 
 ```sh
-sha256sum -c SHA256SUMS
-tar -xzf ssh-exam-<VERSION>-linux-x86_64.tar.gz
+read -rsp 'Admin password: ' ADMIN_PASSWORD
+printf '\n'
+PASSWORD_HASH=$(printf '%s' "$ADMIN_PASSWORD" | \
+  /usr/local/sbin/ssh-exam-admin hash-password)
+unset ADMIN_PASSWORD
+
+SESSION_SECRET=$(openssl rand -base64 32)
 ```
 
-其他架构或 glibc 基线不匹配时，请从源码构建。
+创建权限为 `0600` 的认证文件：
 
-## 从源码构建
+```json
+{
+  "password_hash": "<PASSWORD_HASH>",
+  "session_secret_base64": "<SESSION_SECRET>",
+  "session_ttl_seconds": 28800
+}
+```
 
-使用当前稳定版 Rust 和仓库提交的依赖锁文件：
+用前面两个命令的输出替换占位符。不要直接部署
+`examples/admin-auth.example.json`，其中的公开占位值并不安全。
+
+- 修改管理员密码：重新生成哈希，只替换 `password_hash`，然后重启管理端。
+- 强制所有已登录会话退出：同时重新生成 `session_secret_base64`。
+
+### 4. 初始化并打开管理端
 
 ```sh
-cargo test --locked
-cargo build --release --locked --bins
+sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin migrate \
+  --config /etc/ssh-exam/config.json
+
+sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin serve \
+  --config /etc/ssh-exam/config.json
 ```
 
-发布配置启用 thin LTO、单代码生成单元、panic abort 和符号剥离。`dist/` 下的
-发布二进制在普通提交中保持忽略。
-
-发布构建后可在本地生成同样的包：
+管理端拒绝非回环监听地址。通过 SSH 隧道访问：
 
 ```sh
-./scripts/package-release.sh \
-  --version <VERSION> \
-  --binary-dir target/release \
-  --output-dir <OUTPUT_DIR>
+ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
+  recovery-admin@bastion.example.org
 ```
 
-## 安装
+打开 `http://127.0.0.1:8787/`，然后：
 
-建议使用独立服务账号。以下账号名仅为示例，本仓库不会创建账号或组。
+1. 创建人员。
+2. 登记一个或多个公钥。
+3. 为已有 Unix 账号创建访问映射。
+4. 选择题库和通过后的访问模式。
+5. 需要重新考试时，在 People 页面重置考试状态。
+
+创建人员或访问映射仍然不会自动启用 OpenSSH 拦截。
+
+## 题库
+
+`quiz_path` 始终对应题库 ID `legacy`。配置 `quiz_directory` 后，其中安全的
+`*.json` 文件名主干会成为额外题库 ID，例如 `host-ssh.json` 对应
+`host-ssh`。
+
+每个题库包含：
+
+- 标题和描述性环境（`host`、`docker`、`network`、`general`）；
+- 通过分数和最大尝试次数；
+- 一道或多道选择题。
+
+Web 的 Exam 页面可以创建题库，并编辑设置、题目、选项和答案。写入使用同目录
+临时文件、同步和原子重命名。环境字段只是说明信息，不会访问 Docker、创建容器
+或执行命令。
+
+## 先隔离测试，再改生产
+
+隔离脚本会在调用者指定的运行目录下启动一个独立 `sshd`，并要求显式指定未占用
+端口。它不会编辑或重载系统 SSH 配置。
+
+```sh
+./scripts/isolated-sshd.sh dry-run \
+  --runtime-dir <RUNTIME_DIR> \
+  --port <TEST_PORT> \
+  --test-user <UNIX_USER> \
+  --app-config /etc/ssh-exam/config.json \
+  --policy-binary /usr/local/libexec/ssh-exam-key-policy \
+  --command-user ssh-exam-key
+
+sudo ./scripts/isolated-sshd.sh background \
+  --runtime-dir <RUNTIME_DIR> \
+  --port <TEST_PORT> \
+  --test-user <UNIX_USER> \
+  --app-config /etc/ssh-exam/config.json \
+  --policy-binary /usr/local/libexec/ssh-exam-key-policy \
+  --command-user ssh-exam-key
+
+ssh -p <TEST_PORT> -t <UNIX_USER>@127.0.0.1
+sudo ./scripts/isolated-sshd.sh stop --runtime-dir <RUNTIME_DIR>
+sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
+```
+
+在 Docker 中，容器内监听端口不会自动被其他机器访问。需要显式发布测试端口，
+或者通过已有 SSH 连接建立端口转发。
+
+## 生产启用
+
+<details>
+<summary>建议的文件所有者与权限</summary>
 
 ```text
 /usr/local/libexec/ssh-exam-key-policy   root:root                  0755
@@ -93,199 +220,68 @@ cargo build --release --locked --bins
 /var/lib/ssh-exam/gate.db                ssh-exam-admin:ssh-exam-db 0660
 ```
 
-`ssh-exam-key` 需要数据库及以后 WAL/SHM 文件的只读权限；`ssh-exam-tui` 和
-`ssh-exam-admin` 需要数据库写权限。只有管理端需要题库文件及目录的创建/重命名
-权限。不要授予这些账号 Docker socket 或 Docker 组权限。
+策略账号需要读取数据库以及以后生成的 WAL/SHM 文件；TUI 和管理端需要写数据库；
+只有管理端需要创建/重命名题库文件。不要给这些账号 Docker socket 权限或 Docker
+组成员身份。
 
-复制并编辑 `examples/config.example.json`。生成部署专用的管理认证值，不要部署
-示例值：
+</details>
 
-```sh
-printf '%s' '<ADMIN_PASSWORD>' | /usr/local/sbin/ssh-exam-admin hash-password
-openssl rand -base64 32
-```
+<details>
+<summary>OpenSSH 启用检查清单</summary>
 
-将第一项写入 `admin-auth.json` 的 `password_hash`，第二项写入
-`session_secret_base64`。
-
-启用前初始化或迁移 SQLite：
-
-```sh
-sudo -u ssh-exam-admin /usr/local/sbin/ssh-exam-admin migrate \
-  --config /etc/ssh-exam/config.json
-```
-
-## 题库
-
-`quiz_path` 必填，并始终以题库 ID `legacy` 提供。已有单文件配置无需修改。要启用
-目录模式，请将 `quiz_directory` 设置为绝对目录。目录中安全的 `*.json` 文件名
-主干就是稳定题库 ID，例如 `host-ssh.json` 对应 `host-ssh`。
-
-题库 ID 长度为 1-64，只能使用小写字母、数字和内部单个短横线；`legacy` 为保留
-值。每个题库包含：
-
-- 标题；
-- 描述性环境：`host`、`docker`、`network` 或 `general`；
-- 通过分数和最大尝试次数；
-- 至少一道选择题。
-
-管理端 Exam 页面可列出/选择/创建题库、编辑设置以及增删改问题，并拒绝删除最后
-一道问题。
-
-`tui_language` 可设为 `en`、`zh` 或 `bilingual`，默认双语。TUI 只本地化门禁状态
-和操作提示，不会翻译题库中编写的标题、问题或选项。
-
-`examples/banks/` 中的小型题库仅用于教学。环境元数据不会执行命令、配置主机、
-创建网络、访问 Docker 或启动容器。
-
-## 管理隧道
-
-管理端只监听回环地址（默认 `127.0.0.1:8787`）。通过提供的 unit 或前台方式启动
-后，使用堡垒机实际 SSH 监听端口创建本地隧道：
-
-```sh
-ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
-  recovery-admin@bastion.example.org
-```
-
-打开 `http://127.0.0.1:8787/`。语言选择器完全由服务端渲染，无需 JavaScript。
-成功消息使用签名的一次性 flash cookie，因此页面 URL 保持为 `/`、`/people` 和
-`/exam/<BANK_ID>`。
-
-在 People 页面创建人员、注册每个设备公钥并添加访问映射；在 Exam 页面管理
-兼容题目和目录题库。
-
-## 访问映射
-
-访问映射将人员或指定设备密钥关联到：
-
-- 现有 Unix 登录账号；
-- `Normal shell` 或仅转发的 `Shared ProxyJump`；
-- 一个题库；
-- Shared ProxyJump 的精确转发目标。
-
-映射**不会**配置 SSH 监听端口。允许目标中的端口是目标服务端口。普通 Shell 的
-Unix 账号专属于一个人员；Shared ProxyJump 账号可以复用，但禁止通配目标。
-
-## SSH 拦截与任意端口
-
-本系统与端口无关。`deploy/sshd_config.snippet` 不包含 `Port` 或
-`ListenAddress`。OpenSSH 将 `%u`（账号）、`%f`（指纹）、`%t`（密钥类型）和
-`%k`（base64 密钥数据）传给 `AuthorizedKeysCommand`。策略程序验证这些值和已
-注册密钥材料后才输出结果。
-
-待考试时输出 `restrict,pty` 和包含已验证题库/语言的强制 TUI 命令；通过后输出
-普通 Shell 的注册密钥，或带精确 `permitopen` 的仅转发选项。
-
-示例核心配置为：
-
-```text
-Match Group ssh-exam-gated
-    AuthorizedKeysFile none
-    AuthorizedKeysCommand /usr/local/libexec/ssh-exam-key-policy --config /etc/ssh-exam/config.json --username %u --fingerprint %f --key-type %t --key-base64 %k
-    AuthorizedKeysCommandUser ssh-exam-key
-```
-
-至少保留一个经过验证且不属于 `ssh-exam-gated` 的恢复账号。
-
-## 隔离测试
-
-修改生产配置前使用 `scripts/isolated-sshd.sh`。它只在调用者指定目录下写入，要求
-显式提供未占用端口，不读取/编辑实时 `sshd_config`，也不重载系统 SSH。
-
-测试 Unix 账号必须已存在，并在配置数据库中拥有注册密钥和访问映射。
-
-```sh
-./scripts/isolated-sshd.sh dry-run \
-  --runtime-dir <RUNTIME_DIR> \
-  --port <TEST_PORT> \
-  --test-user exam-test \
-  --app-config /etc/ssh-exam/config.json \
-  --policy-binary /usr/local/libexec/ssh-exam-key-policy \
-  --command-user ssh-exam-key
-
-sudo ./scripts/isolated-sshd.sh validate \
-  --runtime-dir <RUNTIME_DIR> --port <TEST_PORT> \
-  --test-user exam-test \
-  --app-config /etc/ssh-exam/config.json \
-  --policy-binary /usr/local/libexec/ssh-exam-key-policy \
-  --command-user ssh-exam-key
-
-sudo ./scripts/isolated-sshd.sh background \
-  --runtime-dir <RUNTIME_DIR> --port <TEST_PORT> \
-  --test-user exam-test \
-  --app-config /etc/ssh-exam/config.json \
-  --policy-binary /usr/local/libexec/ssh-exam-key-policy \
-  --command-user ssh-exam-key
-```
-
-使用真实 PTY 完成首次考试，然后仅停止并清理该隔离实例：
-
-```sh
-ssh -p <TEST_PORT> -t exam-test@127.0.0.1
-sudo ./scripts/isolated-sshd.sh stop --runtime-dir <RUNTIME_DIR>
-sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
-```
-
-只在明确隔离的监听器上使用 `--listen-address`。防火墙规则和容器端口发布仍由外部
-部署系统负责。
-
-## 生产启用
-
-1. 保持一个已验证的恢复会话，并在实际 `<SSH_PORT>` 上验证第二个恢复登录。恢复
-   账号不能加入门禁组。
-2. 安装二进制、配置、状态目录、服务身份、数据库权限和审查后的 sudoers 规则，
-   用 `visudo -cf deploy/sudoers.snippet` 验证。
-3. 启动回环管理端，注册一次性测试人员/密钥/映射并验证题库编辑。
-4. 使用相同应用配置完成上述隔离测试流程。
-5. 只将预期账号加入 `ssh-exam-gated`，安装审查后的 `Match Group` 片段。启用门禁
-   时不要添加或修改 `Port`。
-6. 用 `/usr/sbin/sshd -t` 验证完整生产配置，并用
+1. 保持一个恢复会话，并在真实 SSH 端口验证第二个恢复登录。恢复账号不能属于
+   `ssh-exam-gated`。
+2. 安装二进制、服务账号、配置、状态目录权限和检查后的 sudoers 规则。使用
+   `visudo -cf deploy/sudoers.snippet` 校验。
+3. 通过管理端登记一个临时人员、公钥、访问映射和题库。
+4. 使用生产应用配置完整执行一次隔离测试。
+5. 只把需要拦截的账号加入 `ssh-exam-gated`，再安装审核后的
+   `deploy/sshd_config.snippet`。
+6. 使用 `/usr/sbin/sshd -t` 校验完整配置，并运行
    `sshd -T -C user=<ACCOUNT>,host=bastion.example.org,addr=<CLIENT_IP>` 检查匹配结果。
-7. 重载而不是重启系统 SSH。从新终端先测试恢复账号，再测试一次性门禁账号；
-   全程保留原恢复会话。
+7. 只重载、不重启系统 SSH。先测恢复账号，再测门禁账号；全程保留原恢复会话。
 
-本仓库不会自动执行任何实时启用步骤。
+门禁不配置 `Port` 或 `ListenAddress`。只要对应监听器命中 `Match Group` 和
+`AuthorizedKeysCommand`，任意 SSH 端口都可以使用。
 
-## 首次考试与 VS Code
+</details>
 
-首次考试必须使用真实 PTY 终端：
+<details>
+<summary>回滚</summary>
+
+从仍然打开的恢复会话中，把受影响用户移出 `ssh-exam-gated`，或移除门禁
+`Match` 配置块。使用 `sshd -t` 校验完整配置后重载 SSH。连接不再命中该 Match
+时，原有 `AuthorizedKeysFile` 行为恢复。
+
+</details>
+
+## VS Code Remote-SSH
+
+VS Code 通常使用不分配 PTY 的 exec channel，因此不能指望它显示首次 TUI。
+先在真实终端完成一次考试：
 
 ```sh
 ssh -p <SSH_PORT> -t person-account@bastion.example.org
-# 完成考试，连接会结束。
-ssh -p <SSH_PORT> person-account@bastion.example.org
+# 完成考试后，连接会关闭。
 ```
 
-VS Code Remote-SSH 通常启动非 PTY exec channel，**不应**期望它显示本 TUI。请先在
-真实终端中使用 `ssh -t` 完成考试。通过后，普通 VS Code Remote-SSH 连接会按映射
-的 Shell 或转发语义正常工作。
+正常 Shell 映射通过后，可照常使用 VS Code Remote-SSH。仅转发映射需要先用
+`ssh -t` 直接完成考试，再把该账号配置为 `ProxyJump`。
 
-ProxyJump 也应先直接使用 `ssh -t` 完成考试，再在堡垒机配置项中设置实际
-`Port <SSH_PORT>` 并作为跳板使用。
+## 安全模型
 
-## 故障排查
+- 身份由请求的 Unix 账号和公钥 SHA256 指纹确定，公钥注释/邮箱不参与识别。
+- 只有人员、公钥和访问映射都启用时，策略程序才输出授权规则。
+- 管理端仅监听回环地址，使用 Argon2id、签名 HttpOnly Cookie、CSRF Token 和
+  一次性签名提示。
+- 正常 Shell 用户名只能属于一个人；仅转发用户名可以共享，但禁止通配目标。
+- 为兼容旧版本，通过状态目前属于人员；该人员所有已启用密钥和映射继承通过状态。
+- 必须保留不受门禁控制的恢复账号。策略默认拒绝，因此数据库路径或权限错误会让
+  被门禁控制的公钥登录失败。
 
-- **直接出现普通 Shell 而非考试：**该连接的 `AuthorizedKeysCommand` 未生效，
-  或 Unix 用户/密钥未注册到已启用的访问映射（也可能人员已通过）。检查有效的
-  `Match Group`、`%u/%f/%t/%k` 调用、组成员、映射、密钥指纹和通过状态。
-- **密钥被拒绝：**比较 `ssh-keygen -lf <PUBLIC_KEY_FILE>` 与注册指纹。注释和邮箱
-  不标识密钥。
-- **端口错误：**映射不会选择监听器。检查有效 `Port`/`ListenAddress`、防火墙或
-  容器发布，并使用实际 `-p <SSH_PORT>`。
-- **VS Code 或 ProxyJump 不显示 TUI：**先直接使用 `ssh -t`；这些流程通常使用
-  非 PTY channel。
-- **管理端不可达：**保持回环监听并使用本地隧道。
-- **题库写入错误：**管理端需要常规题库文件的写权限，以及父目录/题库目录的
-  创建和重命名权限；符号链接会被拒绝。
+## 构建与验证
 
-## 回滚
-
-从仍打开的恢复会话中，将受影响用户移出 `ssh-exam-gated`，或删除/注释门禁
-`Match` 块。用 `sshd -t` 验证完整配置后重载 SSH。当匹配不再生效时，保留的
-`AuthorizedKeysFile` 访问恢复。恢复访问期间可保留数据库和二进制。
-
-## 验证
+使用当前稳定版 Rust 和仓库提交的 lockfile：
 
 ```sh
 cargo fmt --all -- --check
@@ -296,6 +292,20 @@ cargo build --release --locked --bins
 visudo -cf deploy/sudoers.snippet
 ```
 
-`scripts/pty-smoke.py` 验证 TUI 启动、调整大小、输入和清理。
-`scripts/benchmark-key-policy.py` 输出预热后的进程中位数和 p95，目标为中位数低于
-20 ms、p95 低于 50 ms。
+`scripts/pty-smoke.py` 检查终端启动和清理；
+`scripts/benchmark-key-policy.py` 输出策略程序的中位数与 P95 延迟。
+
+## 常见问题
+
+| 现象 | 检查内容 |
+|---|---|
+| 未考试就进入正常 Shell | 有效 `Match Group`、组成员、访问映射、人员通过状态、`%u/%f/%t/%k` 参数 |
+| 公钥被拒绝 | 登记的指纹/密钥内容、启用状态、数据库权限和 SSH 日志中的默认拒绝错误 |
+| VS Code 不显示 TUI | 在真实终端中先执行一次 `ssh -t` |
+| 测试端口只能从 Docker 内访问 | 显式发布端口，或通过已有 SSH 连接转发 |
+| 管理页面无法访问 | 保持回环监听并使用 `ssh -L`，不要直接公开管理端 |
+| 题库保存失败 | 题库必须是普通文件；管理端需要写权限和同目录创建/重命名权限 |
+
+## 许可证
+
+[MIT](LICENSE)
