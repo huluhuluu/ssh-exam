@@ -3206,7 +3206,7 @@ mod tests {
         let alice_id = harness
             .state
             .db
-            .create_person("Alice Researcher", Some("alice"))
+            .create_person("Alice Researcher", Some("root"))
             .unwrap();
         let bob_id = harness
             .state
