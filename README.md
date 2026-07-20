@@ -86,7 +86,8 @@ directories, installs examples and sudoers policy, initializes the database and
 administrator password, and starts the loopback Web service on systemd hosts.
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | sudo sh
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
+  sudo sh -s -- --install
 ```
 
 It prompts twice for the new administrator password through `/dev/tty`, so the
@@ -98,26 +99,25 @@ keys, attempts, and publication history.
 Pin an exact release when repeatability matters:
 
 ```sh
-VERSION=v0.4.4
-curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/install.sh" | \
-  sudo sh -s -- --version "$VERSION"
+VERSION=v0.4.5
+curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | \
+  sudo sh -s -- --install --release "$VERSION"
 ```
 
 For Docker or another non-systemd environment, let the container supervisor
 own the admin process:
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | \
-  sudo sh -s -- --service-mode none
-sudo runuser -u ssh-exam-admin -- /usr/local/sbin/ssh-exam-admin serve \
-  --config /etc/ssh-exam/config.json
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
+  sudo sh -s -- --install --service-mode none
+sudo ssh-exam --serve
 ```
 
 For unattended provisioning, pass a root-readable regular password file with
 `--admin-password-file FILE`, then remove that file immediately. Existing
 installations do not read or replace the administrator password.
 
-The installer deliberately does **not** edit or reload OpenSSH. It installs the
+The unified command deliberately does **not** edit or reload OpenSSH. It installs the
 reviewable SSH and sudoers snippets under `/usr/share/doc/ssh-exam/deploy/`.
 Complete the isolated test and production activation checklist below before
 copying the SSH `Match Group` configuration.
@@ -157,6 +157,22 @@ sudo chmod 0600 /etc/ssh-exam/admin-auth.json
 sudo systemctl restart ssh-exam-admin.service
 ```
 
+### Unified lifecycle commands
+
+```sh
+sudo ssh-exam --upgrade
+sudo ssh-exam --start
+sudo ssh-exam --status
+sudo ssh-exam --restart
+sudo ssh-exam --stop
+sudo ssh-exam --serve    # foreground mode for a container supervisor
+ssh-exam --version
+```
+
+Use `--config`, `--admin-binary`, `--runtime-dir`, `--log-file`, and `--run-as`
+only for custom non-systemd deployments. Exactly one primary action is accepted
+per invocation.
+
 ### Uninstall or completely purge
 
 First remove the reviewed SSH `Match Group`, validate the complete `sshd`
@@ -166,17 +182,17 @@ standard SSH configuration paths still reference `ssh-exam-key-policy`.
 Remove program files while preserving configuration and all runtime data:
 
 ```sh
-sudo ssh-exam-uninstall
+sudo ssh-exam --uninstall
 ```
 
 Explicitly remove program files, configuration, database, quizzes, service
 identities, and project groups:
 
 ```sh
-sudo ssh-exam-uninstall --purge-data --confirm-purge DELETE-SSH-EXAM
+sudo ssh-exam --purge --confirm-purge DELETE-SSH-EXAM
 ```
 
-Release archives contain three binaries, installation scripts, generic
+Release archives contain three binaries, the unified command, compatibility installation scripts, generic
 configuration and quiz examples, deployment snippets, the license, and both
 READMEs. They never contain runtime databases, credentials, SSH keys, logs, or
 host-specific configuration.

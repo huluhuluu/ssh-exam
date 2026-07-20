@@ -73,7 +73,8 @@ authorized-keys 规则；任何异常都默认拒绝。
 并在 systemd 宿主机启动回环 Web 管理服务。
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | sudo sh
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
+  sudo sh -s -- --install
 ```
 
 脚本通过 `/dev/tty` 两次读取新管理员密码，密码不会进入 Shell 历史或命令行参数。
@@ -83,24 +84,23 @@ curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/instal
 需要固定版本时：
 
 ```sh
-VERSION=v0.4.4
-curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/install.sh" | \
-  sudo sh -s -- --version "$VERSION"
+VERSION=v0.4.5
+curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | \
+  sudo sh -s -- --install --release "$VERSION"
 ```
 
 Docker 或其他非 systemd 环境由容器进程管理器负责运行管理端：
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/install.sh | \
-  sudo sh -s -- --service-mode none
-sudo runuser -u ssh-exam-admin -- /usr/local/sbin/ssh-exam-admin serve \
-  --config /etc/ssh-exam/config.json
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
+  sudo sh -s -- --install --service-mode none
+sudo ssh-exam --serve
 ```
 
 无人值守部署可使用 `--admin-password-file FILE` 指向仅 root 可读的普通文件，安装后
 立即删除该文件。已有安装不会读取或替换管理员密码。
 
-安装脚本**不会**编辑或重载 OpenSSH。需要人工审核的 SSH 与 sudoers 片段安装在
+统一命令**不会**编辑或重载 OpenSSH。需要人工审核的 SSH 与 sudoers 片段安装在
 `/usr/share/doc/ssh-exam/deploy/`。复制 SSH `Match Group` 配置前，必须完成下文的
 隔离测试和生产启用检查。
 
@@ -137,6 +137,21 @@ sudo chmod 0600 /etc/ssh-exam/admin-auth.json
 sudo systemctl restart ssh-exam-admin.service
 ```
 
+### 统一生命周期命令
+
+```sh
+sudo ssh-exam --upgrade
+sudo ssh-exam --start
+sudo ssh-exam --status
+sudo ssh-exam --restart
+sudo ssh-exam --stop
+sudo ssh-exam --serve    # 供容器进程管理器使用的前台模式
+ssh-exam --version
+```
+
+只有自定义非 systemd 部署才需要传入 `--config`、`--admin-binary`、
+`--runtime-dir`、`--log-file` 和 `--run-as`。每次调用只能指定一个主操作。
+
 ### 一键卸载或彻底清除
 
 首先移除已审核的 SSH `Match Group`，校验完整 `sshd` 配置并重载 SSH。如果标准 SSH
@@ -145,16 +160,16 @@ sudo systemctl restart ssh-exam-admin.service
 只删除程序文件，保留配置和所有运行数据：
 
 ```sh
-sudo ssh-exam-uninstall
+sudo ssh-exam --uninstall
 ```
 
 显式删除程序、配置、数据库、题库、服务身份和项目组：
 
 ```sh
-sudo ssh-exam-uninstall --purge-data --confirm-purge DELETE-SSH-EXAM
+sudo ssh-exam --purge --confirm-purge DELETE-SSH-EXAM
 ```
 
-发布压缩包只包含三个二进制、安装脚本、通用配置/题库示例、部署片段、许可证和
+发布压缩包只包含三个二进制、统一命令、兼容安装脚本、通用配置/题库示例、部署片段、许可证和
 中英文 README，不包含数据库、凭据、SSH 密钥、日志或机器专用配置。
 
 ## 题库

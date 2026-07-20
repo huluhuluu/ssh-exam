@@ -78,23 +78,28 @@ cp -- "$project_dir/README.md" "$project_dir/README.zh-CN.md" \
     "$project_dir/LICENSE" "$package_root/docs/"
 cp -- "$project_dir/scripts/install.sh" "$package_root/install.sh"
 cp -- "$project_dir/scripts/uninstall.sh" "$package_root/uninstall.sh"
-chmod 0755 "$package_root/install.sh" "$package_root/uninstall.sh"
+cp -- "$project_dir/scripts/ssh-exam.sh" "$package_root/ssh-exam"
+chmod 0755 "$package_root/install.sh" "$package_root/uninstall.sh" \
+    "$package_root/ssh-exam"
 
 archive=$output_dir/$package_name.tar.gz
 [ ! -e "$archive" ] && [ ! -e "$output_dir/SHA256SUMS" ] && \
-    [ ! -e "$output_dir/install.sh" ] && [ ! -e "$output_dir/uninstall.sh" ] || {
+    [ ! -e "$output_dir/install.sh" ] && [ ! -e "$output_dir/uninstall.sh" ] && \
+    [ ! -e "$output_dir/ssh-exam" ] || {
     echo "release output already exists in $output_dir" >&2
     exit 1
 }
 tar -czf "$archive" -C "$staging_dir" "$package_name"
 cp -- "$project_dir/scripts/install.sh" "$output_dir/install.sh"
 cp -- "$project_dir/scripts/uninstall.sh" "$output_dir/uninstall.sh"
-chmod 0755 "$output_dir/install.sh" "$output_dir/uninstall.sh"
+cp -- "$project_dir/scripts/ssh-exam.sh" "$output_dir/ssh-exam"
+chmod 0755 "$output_dir/install.sh" "$output_dir/uninstall.sh" "$output_dir/ssh-exam"
 (
     cd -- "$output_dir"
-    sha256sum "$package_name.tar.gz" install.sh uninstall.sh >SHA256SUMS
+    sha256sum "$package_name.tar.gz" ssh-exam install.sh uninstall.sh >SHA256SUMS
 )
 echo "Created $archive"
 echo "Created $output_dir/install.sh"
 echo "Created $output_dir/uninstall.sh"
+echo "Created $output_dir/ssh-exam"
 echo "Created $output_dir/SHA256SUMS"

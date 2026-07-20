@@ -65,7 +65,8 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
 fi
 
 rm -f -- /usr/local/libexec/ssh-exam-key-policy \
-    /usr/local/libexec/ssh-exam-tui /usr/local/sbin/ssh-exam-admin
+    /usr/local/libexec/ssh-exam-tui /usr/local/libexec/ssh-exam-install \
+    /usr/local/sbin/ssh-exam-admin /usr/local/sbin/ssh-exam
 rm -rf -- "$DOC_DIR"
 
 if [ "$purge_data" -eq 1 ]; then

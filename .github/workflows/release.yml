@@ -35,3 +35,4 @@ jobs:
             ${{ runner.temp }}/ssh-exam-release/SHA256SUMS
             ${{ runner.temp }}/ssh-exam-release/install.sh
             ${{ runner.temp }}/ssh-exam-release/uninstall.sh
+            ${{ runner.temp }}/ssh-exam-release/ssh-exam
