@@ -6,7 +6,7 @@ use std::{
 };
 
 use ssh_exam_gate::{
-    config::AppConfig,
+    config::{AdminAuthConfig, AppConfig},
     db::Db,
     quiz::{BankEnvironment, Question, Quiz},
 };
@@ -221,6 +221,7 @@ fn admin_initializes_rotates_imports_composes_and_publishes() {
     };
     quiz.save_atomic(&config.quiz_path).unwrap();
 
+    let mut previous_session_secret = None;
     for (subcommand, password) in [
         ("init", "first-admin-password\n"),
         ("set-admin-password", "second-admin-password\n"),
@@ -238,6 +239,14 @@ fn admin_initializes_rotates_imports_composes_and_publishes() {
             .write_all(password.as_bytes())
             .unwrap();
         assert!(child.wait_with_output().unwrap().status.success());
+        let auth = AdminAuthConfig::load(&config.admin_auth_path).unwrap();
+        if let Some(previous) = &previous_session_secret {
+            assert_ne!(
+                previous, &auth.session_secret_base64,
+                "changing the administrator password must invalidate existing sessions"
+            );
+        }
+        previous_session_secret = Some(auth.session_secret_base64);
     }
     assert!(config.admin_auth_path.exists());
 

@@ -99,7 +99,7 @@ keys, attempts, and publication history.
 Pin an exact release when repeatability matters:
 
 ```sh
-VERSION=v0.4.5
+VERSION=v0.4.6
 curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | \
   sudo sh -s -- --install --release "$VERSION"
 ```

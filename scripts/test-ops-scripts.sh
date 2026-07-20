@@ -22,6 +22,11 @@ if grep -Eq '(cp|install|mv|rm|sed).*/etc/ssh/' "$install_script"; then
 fi
 grep -q 'sha256sum' "$install_script"
 grep -q 'Preserved:.*CONFIG_DIR.*STATE_DIR' "$uninstall_script"
+grep -q -- '--username \* --fingerprint SHA256\\:\* --language \*' "$project_dir/deploy/sudoers.snippet"
+if grep -q -- '--bank' "$project_dir/deploy/sudoers.snippet"; then
+    echo "sudoers snippet contains removed --bank argument" >&2
+    exit 1
+fi
 
 if "$command_script" --start --stop >/dev/null 2>&1; then
     echo "unified command accepted multiple primary actions" >&2
@@ -29,10 +34,15 @@ if "$command_script" --start --stop >/dev/null 2>&1; then
 fi
 
 work_dir=$(mktemp -d)
+foreign_pid=
 cleanup() {
     "$command_script" --stop --service-mode none --config "$work_dir/config.json" \
         --admin-binary "$work_dir/fake-admin" --runtime-dir "$work_dir/run" \
         --log-file "$work_dir/admin.log" --run-as "$(id -un)" >/dev/null 2>&1 || true
+    if [ -n "$foreign_pid" ]; then
+        kill "$foreign_pid" >/dev/null 2>&1 || true
+        wait "$foreign_pid" 2>/dev/null || true
+    fi
     rm -rf -- "$work_dir"
 }
 trap cleanup EXIT HUP INT TERM
@@ -64,5 +74,20 @@ set -e
     echo "stopped unified service status should exit 3" >&2
     exit 1
 }
+
+printf '{}\n' >"$work_dir/other-config.json"
+"$work_dir/fake-admin" serve --config "$work_dir/other-config.json" >/dev/null 2>&1 &
+foreign_pid=$!
+mkdir -p "$work_dir/run"
+printf '%s\n' "$foreign_pid" >"$work_dir/run/admin.pid"
+# shellcheck disable=SC2086
+"$command_script" --stop $service_args >/dev/null
+kill -0 "$foreign_pid" 2>/dev/null || {
+    echo "stop killed an admin process using a different config" >&2
+    exit 1
+}
+kill "$foreign_pid"
+wait "$foreign_pid" 2>/dev/null || true
+foreign_pid=
 
 echo "Operational script checks passed"

@@ -134,7 +134,10 @@ impl AdminAuthConfig {
     pub fn validate(&self) -> Result<()> {
         let password_hash = argon2::PasswordHash::new(&self.password_hash)
             .map_err(|error| anyhow::anyhow!("password_hash is not a PHC string: {error}"))?;
-        if !password_hash.algorithm.as_str().starts_with("argon2") {
+        if !matches!(
+            password_hash.algorithm.as_str(),
+            "argon2d" | "argon2i" | "argon2id"
+        ) {
             bail!("password_hash must use Argon2");
         }
         let secret = STANDARD
@@ -204,5 +207,16 @@ mod tests {
         assert!(!serde_json::to_string(&config)
             .unwrap()
             .contains("proxy_refuse_command"));
+    }
+
+    #[test]
+    fn rejects_lookalike_argon2_algorithm() {
+        let mut auth = AdminAuthConfig {
+            password_hash: crate::web::hash_password(b"unit-test-password").unwrap(),
+            session_secret_base64: STANDARD.encode([7_u8; 32]),
+            session_ttl_seconds: 3600,
+        };
+        auth.password_hash = auth.password_hash.replacen("argon2id", "argon2evil", 1);
+        assert!(auth.validate().is_err());
     }
 }

@@ -18,7 +18,7 @@ Usage: install.sh [OPTIONS]
 Install or upgrade SSH Exam Gate from a verified GitHub release.
 
 Options:
-  --version VERSION             Release tag such as v0.4.5 (default: latest)
+  --version VERSION             Release tag such as v0.4.6 (default: latest)
   --service-mode MODE           auto, systemd, or none (default: auto)
   --admin-bind ADDRESS          Fresh-install loopback bind (default: 127.0.0.1:8787)
   --admin-password-file FILE    Read a fresh-install admin password from FILE

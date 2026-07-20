@@ -24,7 +24,7 @@ Primary actions (choose exactly one):
   --version                Show the installed binary version
 
 Install/upgrade options:
-  --release VERSION             Release tag such as v0.4.5 (default: latest)
+  --release VERSION             Release tag such as v0.4.6 (default: latest)
   --service-mode MODE           auto, systemd, or none (default: auto)
   --admin-bind ADDRESS          Fresh-install loopback bind
   --admin-password-file FILE    Fresh-install password file
@@ -217,7 +217,13 @@ process_matches() {
     case "$candidate" in ''|*[!0-9]*) return 1 ;; esac
     kill -0 "$candidate" 2>/dev/null || return 1
     [ -r "/proc/$candidate/cmdline" ] || return 1
-    tr '\000' '\n' <"/proc/$candidate/cmdline" | grep -Fqx "$admin_binary"
+    expected=$(printf '%s\nserve\n--config\n%s' "$admin_binary" "$config")
+    actual=$(tr '\000' '\n' <"/proc/$candidate/cmdline")
+    case "$actual" in
+        "$expected"|*"
+$expected") return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 read_managed_pid() {

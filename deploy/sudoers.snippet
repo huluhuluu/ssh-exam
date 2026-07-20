@@ -2,7 +2,7 @@
 # only because ssh-exam-tui revalidates SUDO_USER, username, fingerprint, enabled
 # key, assigned Unix account, active publication, and language before it can
 # write an exam attempt.
-Cmnd_Alias SSH_EXAM_TUI = /usr/local/libexec/ssh-exam-tui --config /etc/ssh-exam/config.json --username * --fingerprint SHA256\:* --bank * --language *
+Cmnd_Alias SSH_EXAM_TUI = /usr/local/libexec/ssh-exam-tui --config /etc/ssh-exam/config.json --username * --fingerprint SHA256\:* --language *
 
 Defaults!SSH_EXAM_TUI env_reset
 Defaults!SSH_EXAM_TUI !set_home

@@ -376,17 +376,14 @@ fn write_admin_auth(
     password: Vec<u8>,
     existing: Option<AdminAuthConfig>,
 ) -> Result<()> {
-    let (session_secret_base64, session_ttl_seconds) = match existing {
-        Some(config) => (config.session_secret_base64, config.session_ttl_seconds),
-        None => {
-            let mut secret = [0_u8; 32];
-            OsRng.fill_bytes(&mut secret);
-            (STANDARD.encode(secret), 8 * 60 * 60)
-        }
-    };
+    let session_ttl_seconds = existing
+        .map(|config| config.session_ttl_seconds)
+        .unwrap_or(8 * 60 * 60);
+    let mut secret = [0_u8; 32];
+    OsRng.fill_bytes(&mut secret);
     let auth = AdminAuthConfig {
         password_hash: web::hash_password(&password)?,
-        session_secret_base64,
+        session_secret_base64: STANDARD.encode(secret),
         session_ttl_seconds,
     };
     auth.validate()?;

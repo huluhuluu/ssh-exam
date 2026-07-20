@@ -16,6 +16,7 @@ const MIGRATION_2: &str = include_str!("../migrations/0002_mapping_bank.sql");
 const MIGRATION_3: &str = include_str!("../migrations/0003_unified_access.sql");
 const MIGRATION_4: &str = include_str!("../migrations/0004_tests_and_publications.sql");
 const MIGRATION_5: &str = include_str!("../migrations/0005_direct_accounts_and_test_options.sql");
+const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Error)]
 pub enum GateError {
@@ -163,6 +164,16 @@ impl Db {
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);",
         )?;
+        let newest_version: u32 = transaction.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        if newest_version > CURRENT_SCHEMA_VERSION {
+            return Err(GateError::Invalid(format!(
+                "database schema version {newest_version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+            )));
+        }
         for (version, migration) in [
             (1, MIGRATION_1),
             (2, MIGRATION_2),
@@ -1388,6 +1399,25 @@ mod tests {
         ));
         transaction.rollback().unwrap();
         db.create_person("Recovered", None).unwrap();
+    }
+
+    #[test]
+    fn rejects_database_from_a_newer_release() {
+        let (_directory, db) = database(Duration::from_secs(1));
+        let connection = db.open_writable().unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version) VALUES (?1)",
+                [CURRENT_SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = db.initialize().unwrap_err();
+        assert!(matches!(
+            error,
+            GateError::Invalid(message) if message.contains("newer than supported")
+        ));
     }
 
     #[test]

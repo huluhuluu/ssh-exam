@@ -84,7 +84,7 @@ curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-ex
 需要固定版本时：
 
 ```sh
-VERSION=v0.4.5
+VERSION=v0.4.6
 curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | \
   sudo sh -s -- --install --release "$VERSION"
 ```

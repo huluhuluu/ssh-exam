@@ -2806,6 +2806,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protocol_boundaries_fail_closed() {
+        let harness = harness();
+        let (mut session, _) = login(&harness.app).await;
+        session.push('x');
+        let response = harness
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/")
+                    .header(header::COOKIE, session)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/login");
+
+        let response = harness
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(vec![b'x'; 4 * 1024 * 1024 + 1]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(response.headers().contains_key("content-security-policy"));
+
+        let response = harness
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/persons")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn nested_key_routes_enforce_person_ownership() {
+        let harness = harness();
+        let first = harness.state.db.create_person("First", None).unwrap();
+        let second = harness.state.db.create_person("Second", None).unwrap();
+        let key = harness
+            .state
+            .db
+            .add_key(first, "ssh-ed25519 aGVsbG8= first")
+            .unwrap();
+        let (session, csrf) = login(&harness.app).await;
+
+        let response = form_post(
+            &harness.app,
+            &format!("/people/{second}/keys/{}/enabled", key.id),
+            &session,
+            &format!("csrf={csrf}&enabled=false"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(harness.state.db.get_person(first).unwrap().keys[0].enabled);
+    }
+
+    #[tokio::test]
     async fn rejects_unauthenticated_and_bad_csrf_mutations() {
         let harness = harness();
         for (path, body) in [
