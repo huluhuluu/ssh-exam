@@ -6,7 +6,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{chown, MetadataExt, OpenOptionsExt};
 
 use anyhow::{bail, Context, Result};
 use base64::{
@@ -376,6 +376,15 @@ fn write_admin_auth(
     password: Vec<u8>,
     existing: Option<AdminAuthConfig>,
 ) -> Result<()> {
+    #[cfg(unix)]
+    let existing_owner = if nix::unistd::Uid::effective().is_root() {
+        fs::symlink_metadata(path)
+            .ok()
+            .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            .map(|metadata| (metadata.uid(), metadata.gid()))
+    } else {
+        None
+    };
     let session_ttl_seconds = existing
         .map(|config| config.session_ttl_seconds)
         .unwrap_or(8 * 60 * 60);
@@ -407,6 +416,12 @@ fn write_admin_auth(
         let mut file: File = options
             .open(&temporary)
             .with_context(|| format!("failed to create {}", temporary.display()))?;
+        #[cfg(unix)]
+        if let Some((uid, gid)) = existing_owner {
+            chown(&temporary, Some(uid), Some(gid)).with_context(|| {
+                format!("failed to preserve ownership for {}", temporary.display())
+            })?;
+        }
         file.write_all(&encoded)?;
         file.sync_all()?;
         drop(file);

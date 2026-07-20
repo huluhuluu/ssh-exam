@@ -6,6 +6,13 @@ install_script=$project_dir/scripts/install.sh
 uninstall_script=$project_dir/scripts/uninstall.sh
 command_script=$project_dir/scripts/ssh-exam.sh
 
+for readme in "$project_dir/README.md" "$project_dir/README.zh-CN.md"; do
+    if grep -Eq '^(curl -fsSL|ssh -p ).*\\$' "$readme"; then
+        echo "simple README commands must not use hard line continuations: $readme" >&2
+        exit 1
+    fi
+done
+
 sh -n "$install_script"
 sh -n "$uninstall_script"
 sh -n "$command_script"
@@ -21,6 +28,7 @@ if grep -Eq '(cp|install|mv|rm|sed).*/etc/ssh/' "$install_script"; then
     exit 1
 fi
 grep -q 'sha256sum' "$install_script"
+grep -q 'password_shared.*00' "$install_script"
 grep -q 'Preserved:.*CONFIG_DIR.*STATE_DIR' "$uninstall_script"
 grep -q -- '--username \* --fingerprint SHA256\\:\* --language \*' "$project_dir/deploy/sudoers.snippet"
 if grep -q -- '--bank' "$project_dir/deploy/sudoers.snippet"; then
@@ -50,12 +58,61 @@ trap cleanup EXIT HUP INT TERM
 printf '{}\n' >"$work_dir/config.json"
 cat >"$work_dir/fake-admin" <<'EOF'
 #!/bin/sh
-trap 'exit 0' TERM INT
-while :; do
-    sleep 1
-done
+directory=${0%/*}
+case "${1:-}" in
+    serve)
+        trap 'exit 0' TERM INT
+        while :; do sleep 1; done
+        ;;
+    migrate)
+        printf '%s\n' "$*" >"$directory/admin-args"
+        ;;
+    set-admin-password)
+        printf '%s\n' "$*" >"$directory/admin-args"
+        cat >"$directory/admin-password"
+        ;;
+    *) exit 64 ;;
+esac
 EOF
 chmod 0755 "$work_dir/fake-admin"
+
+printf '%s' 'replacement-password' >"$work_dir/password"
+chmod 0600 "$work_dir/password"
+"$command_script" --set-admin-password --config "$work_dir/config.json" \
+    --admin-binary "$work_dir/fake-admin" \
+    --admin-password-file "$work_dir/password" >/dev/null
+[ "$(cat "$work_dir/admin-password")" = replacement-password ]
+grep -Fqx "set-admin-password --config $work_dir/config.json" "$work_dir/admin-args"
+"$command_script" --migrate --config "$work_dir/config.json" \
+    --admin-binary "$work_dir/fake-admin" --run-as "$(id -un)"
+grep -Fqx "migrate --config $work_dir/config.json" "$work_dir/admin-args"
+if "$command_script" --migrate --config "$work_dir/config.json" \
+    --admin-binary "$work_dir/fake-admin" --run-as "$(id -un)" \
+    --admin-password-file "$work_dir/password" >/dev/null 2>&1; then
+    echo "migrate accepted a password option" >&2
+    exit 1
+fi
+if "$command_script" --set-admin-password --config "$work_dir/config.json" \
+    --admin-binary "$work_dir/fake-admin" --run-as "$(id -un)" \
+    --admin-password-file "$work_dir/password" --runtime-dir "$work_dir/run" \
+    >/dev/null 2>&1; then
+    echo "password rotation accepted a runtime option" >&2
+    exit 1
+fi
+chmod 0644 "$work_dir/password"
+if "$command_script" --set-admin-password --config "$work_dir/config.json" \
+    --admin-binary "$work_dir/fake-admin" \
+    --admin-password-file "$work_dir/password" >/dev/null 2>&1; then
+    echo "password rotation accepted a group-readable password file" >&2
+    exit 1
+fi
+chmod 0600 "$work_dir/password"
+if "$command_script" --start --service-mode none --config "$work_dir/config.json" \
+    --admin-binary "$work_dir/fake-admin" --run-as "$(id -un)" \
+    --admin-password-file "$work_dir/password" >/dev/null 2>&1; then
+    echo "service action accepted a password option" >&2
+    exit 1
+fi
 
 service_args="--service-mode none --config $work_dir/config.json --admin-binary $work_dir/fake-admin --runtime-dir $work_dir/run --log-file $work_dir/admin.log --run-as $(id -un)"
 # The test paths contain no whitespace; splitting is intentional for POSIX sh.

@@ -86,8 +86,7 @@ directories, installs examples and sudoers policy, initializes the database and
 administrator password, and starts the loopback Web service on systemd hosts.
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
-  sudo sh -s -- --install
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | sudo sh -s -- --install
 ```
 
 It prompts twice for the new administrator password through `/dev/tty`, so the
@@ -99,17 +98,15 @@ keys, attempts, and publication history.
 Pin an exact release when repeatability matters:
 
 ```sh
-VERSION=v0.4.6
-curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | \
-  sudo sh -s -- --install --release "$VERSION"
+VERSION=v0.4.7
+curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | sudo sh -s -- --install --release "$VERSION"
 ```
 
 For Docker or another non-systemd environment, let the container supervisor
 own the admin process:
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
-  sudo sh -s -- --install --service-mode none
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | sudo sh -s -- --install --service-mode none
 sudo ssh-exam --serve
 ```
 
@@ -127,8 +124,8 @@ copying the SSH `Match Group` configuration.
 The admin refuses non-loopback bind addresses. Reach it through an SSH tunnel:
 
 ```sh
-ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
-  recovery-admin@bastion.example.org
+sudo ssh-exam --start
+ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 recovery-admin@bastion.example.org
 ```
 
 Open `http://127.0.0.1:8787/`, then:
@@ -147,20 +144,23 @@ also use the supplied `Match Group` configuration for the account.
 ### Password rotation
 
 ```sh
-read -rsp 'New admin password: ' ADMIN_PASSWORD
-printf '\n'
-printf '%s' "$ADMIN_PASSWORD" | sudo /usr/local/sbin/ssh-exam-admin \
-  set-admin-password --config /etc/ssh-exam/config.json
-unset ADMIN_PASSWORD
-sudo chown ssh-exam-admin:root /etc/ssh-exam/admin-auth.json
-sudo chmod 0600 /etc/ssh-exam/admin-auth.json
-sudo systemctl restart ssh-exam-admin.service
+sudo ssh-exam --set-admin-password
+sudo ssh-exam --restart
 ```
 
-### Unified lifecycle commands
+The first command prompts twice through `/dev/tty`, atomically replaces the auth
+file, and preserves its existing UID/GID; the password never appears in shell
+history or process arguments. For unattended rotation, pass
+`--admin-password-file /root/admin-password` and remove the file immediately.
+For an externally supervised container, restart that container or process rather
+than starting a second admin instance.
+
+### Unified management commands
 
 ```sh
 sudo ssh-exam --upgrade
+sudo ssh-exam --migrate
+sudo ssh-exam --set-admin-password
 sudo ssh-exam --start
 sudo ssh-exam --status
 sudo ssh-exam --restart
@@ -169,9 +169,11 @@ sudo ssh-exam --serve    # foreground mode for a container supervisor
 ssh-exam --version
 ```
 
-Use `--config`, `--admin-binary`, `--runtime-dir`, `--log-file`, and `--run-as`
-only for custom non-systemd deployments. Exactly one primary action is accepted
-per invocation.
+`--install` already performs first-time initialization. Use `--config`,
+`--admin-binary`, or `--run-as` only for custom deployments; `--runtime-dir` and
+`--log-file` apply only to non-systemd lifecycle actions. Exactly one primary
+action is accepted per invocation. Advanced bank/test automation remains
+available through `ssh-exam-admin` subcommands.
 
 ### Uninstall or completely purge
 

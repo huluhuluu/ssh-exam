@@ -16,6 +16,8 @@ Primary actions (choose exactly one):
   --upgrade, upgrade       Upgrade through the same idempotent installer
   --uninstall, uninstall   Remove program files and preserve runtime data
   --purge, purge           Remove program files and explicitly confirmed data
+  --migrate, migrate       Apply database migrations
+  --set-admin-password     Replace the administrator password
   --start, start           Start the admin service
   --stop, stop             Stop the admin service
   --restart, restart       Restart the admin service
@@ -24,20 +26,22 @@ Primary actions (choose exactly one):
   --version                Show the installed binary version
 
 Install/upgrade options:
-  --release VERSION             Release tag such as v0.4.6 (default: latest)
+  --release VERSION             Release tag such as v0.4.7 (default: latest)
   --service-mode MODE           auto, systemd, or none (default: auto)
   --admin-bind ADDRESS          Fresh-install loopback bind
-  --admin-password-file FILE    Fresh-install password file
+  --admin-password-file FILE    Fresh-install or replacement password file
 
 Purge option:
   --confirm-purge VALUE         Must be DELETE-SSH-EXAM
 
-Service options:
+Admin/service options:
   --config PATH                 Application config path
   --admin-binary PATH           ssh-exam-admin binary path
+  --run-as USER                 Admin/service identity
+
+Non-systemd service options:
   --runtime-dir PATH            PID/log directory for non-systemd mode
   --log-file PATH               Non-systemd log path
-  --run-as USER                 Non-systemd service identity
 
 The command never edits or reloads OpenSSH.
 EOF
@@ -53,6 +57,7 @@ release=latest
 service_mode=auto
 admin_bind=127.0.0.1:8787
 password_file=
+admin_password=
 confirmation=
 config=$DEFAULT_CONFIG
 admin_binary=$DEFAULT_ADMIN_BINARY
@@ -60,9 +65,12 @@ runtime_dir=$DEFAULT_RUNTIME_DIR
 log_file=
 run_as=
 install_options=0
+password_options=0
 purge_options=0
 service_options=0
+runtime_options=0
 service_mode_set=0
+tty_settings=
 
 set_action() {
     [ -z "$action" ] || die "choose exactly one primary action"
@@ -75,6 +83,8 @@ while [ "$#" -gt 0 ]; do
         --upgrade|upgrade) set_action upgrade; shift ;;
         --uninstall|uninstall) set_action uninstall; shift ;;
         --purge|purge) set_action purge; shift ;;
+        --migrate|migrate) set_action migrate; shift ;;
+        --set-admin-password|set-admin-password) set_action set_admin_password; shift ;;
         --start|start) set_action start; shift ;;
         --stop|stop) set_action stop; shift ;;
         --restart|restart) set_action restart; shift ;;
@@ -90,12 +100,12 @@ while [ "$#" -gt 0 ]; do
                 --release) release=$value; install_options=1 ;;
                 --service-mode) service_mode=$value; service_mode_set=1 ;;
                 --admin-bind) admin_bind=$value; install_options=1 ;;
-                --admin-password-file) password_file=$value; install_options=1 ;;
+                --admin-password-file) password_file=$value; password_options=1 ;;
                 --confirm-purge) confirmation=$value; purge_options=1 ;;
                 --config) config=$value; service_options=1 ;;
                 --admin-binary) admin_binary=$value; service_options=1 ;;
-                --runtime-dir) runtime_dir=$value; service_options=1 ;;
-                --log-file) log_file=$value; service_options=1 ;;
+                --runtime-dir) runtime_dir=$value; service_options=1; runtime_options=1 ;;
+                --log-file) log_file=$value; service_options=1; runtime_options=1 ;;
                 --run-as) run_as=$value; service_options=1 ;;
             esac
             ;;
@@ -163,7 +173,8 @@ find_uninstaller() {
 }
 
 run_uninstaller() {
-    [ "$install_options" -eq 0 ] && [ "$service_options" -eq 0 ] && [ "$service_mode_set" -eq 0 ] || {
+    [ "$install_options" -eq 0 ] && [ "$password_options" -eq 0 ] && \
+        [ "$service_options" -eq 0 ] && [ "$service_mode_set" -eq 0 ] || {
         die "uninstall/purge does not accept install or service options"
     }
     find_uninstaller
@@ -175,16 +186,24 @@ run_uninstaller() {
     exec sh "$uninstaller"
 }
 
-validate_service_paths() {
-    [ "$install_options" -eq 0 ] && [ "$purge_options" -eq 0 ] || {
-        die "service actions do not accept install or purge options"
-    }
+validate_command_paths() {
     [ -f "$config" ] && [ ! -L "$config" ] || die "config must be a regular non-symlink file: $config"
     [ -f "$admin_binary" ] && [ ! -L "$admin_binary" ] && [ -x "$admin_binary" ] || {
         die "admin binary must be a regular executable: $admin_binary"
     }
     admin_binary=$(readlink -f "$admin_binary")
     config=$(readlink -f "$config")
+}
+
+validate_service_options() {
+    [ "$install_options" -eq 0 ] && [ "$password_options" -eq 0 ] && \
+        [ "$purge_options" -eq 0 ] || {
+        die "service actions accept only service options"
+    }
+}
+
+validate_service_paths() {
+    validate_command_paths
     case "$runtime_dir" in /*) ;; *) die "--runtime-dir must be absolute" ;; esac
     if [ -n "$log_file" ]; then
         case "$log_file" in /*) ;; *) die "--log-file must be absolute" ;; esac
@@ -192,6 +211,99 @@ validate_service_paths() {
         log_file=$runtime_dir/admin.log
     fi
     pid_file=$runtime_dir/admin.pid
+}
+
+resolve_admin_run_as() {
+    if [ -z "$run_as" ]; then
+        if [ "$action" = migrate ] && [ "$(id -u)" -eq 0 ] && id ssh-exam-admin >/dev/null 2>&1; then
+            run_as=ssh-exam-admin
+        else
+            run_as=$(id -un)
+        fi
+    fi
+    id "$run_as" >/dev/null 2>&1 || die "admin user does not exist: $run_as"
+    if [ "$run_as" != "$(id -un)" ]; then
+        [ "$(id -u)" -eq 0 ] || die "changing --run-as requires root"
+        command -v runuser >/dev/null 2>&1 || die "runuser is required to change --run-as"
+    fi
+}
+
+run_admin_binary() {
+    if [ "$run_as" = "$(id -un)" ]; then
+        "$admin_binary" "$@"
+    else
+        runuser -u "$run_as" -- "$admin_binary" "$@"
+    fi
+}
+
+restore_tty() {
+    if [ -n "$tty_settings" ]; then
+        stty "$tty_settings" </dev/tty 2>/dev/null || true
+        tty_settings=
+    fi
+}
+
+read_replacement_password() {
+    if [ -n "$password_file" ]; then
+        [ -f "$password_file" ] && [ ! -L "$password_file" ] && [ -r "$password_file" ] || {
+            die "admin password file must be a readable regular non-symlink file"
+        }
+        command -v stat >/dev/null 2>&1 || die "stat is required to validate the password file"
+        password_mode=$(stat -c '%a' "$password_file")
+        case "$password_mode" in
+            [0-7][0-7][0-7]) ;;
+            *) die "admin password file permissions could not be checked" ;;
+        esac
+        password_shared=${password_mode#?}
+        case "$password_shared" in
+            00) ;;
+            *) die "admin password file must not be accessible by group or other users" ;;
+        esac
+        admin_password=$(cat -- "$password_file")
+        return
+    fi
+    [ -r /dev/tty ] || die "password rotation needs a TTY or --admin-password-file"
+    command -v stty >/dev/null 2>&1 || die "stty is required for interactive password input"
+    tty_settings=$(stty -g </dev/tty)
+    trap 'restore_tty' EXIT
+    trap 'restore_tty; exit 1' HUP INT TERM
+    printf 'New administrator password: ' >/dev/tty
+    stty -echo </dev/tty
+    IFS= read -r first </dev/tty
+    printf '\nConfirm administrator password: ' >/dev/tty
+    IFS= read -r second </dev/tty
+    restore_tty
+    trap - EXIT HUP INT TERM
+    printf '\n' >/dev/tty
+    [ "$first" = "$second" ] || die "administrator passwords do not match"
+    admin_password=$first
+}
+
+run_admin_action() {
+    [ "$install_options" -eq 0 ] && [ "$purge_options" -eq 0 ] && \
+        [ "$runtime_options" -eq 0 ] && [ "$service_mode_set" -eq 0 ] || {
+        die "admin actions accept only admin options"
+    }
+    validate_command_paths
+    resolve_admin_run_as
+    case "$action" in
+        migrate)
+            [ "$password_options" -eq 0 ] || die "--admin-password-file requires --set-admin-password or --install"
+            run_admin_binary migrate --config "$config"
+            ;;
+        set_admin_password)
+            read_replacement_password
+            if printf '%s' "$admin_password" | \
+                run_admin_binary set-admin-password --config "$config"; then
+                result=0
+            else
+                result=$?
+            fi
+            admin_password=
+            [ "$result" -eq 0 ] || return "$result"
+            echo "Restart the admin service to load the new password and invalidate existing sessions."
+            ;;
+    esac
 }
 
 resolve_service_mode() {
@@ -308,6 +420,7 @@ stop_fallback() {
 }
 
 run_service_action() {
+    validate_service_options
     resolve_service_mode
     if [ "$service_mode" = systemd ]; then
         command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] || {
@@ -354,9 +467,10 @@ run_service_action() {
 case "$action" in
     install|upgrade) run_installer ;;
     uninstall|purge) run_uninstaller ;;
+    migrate|set_admin_password) run_admin_action ;;
     start|stop|restart|status|serve) run_service_action ;;
     version)
-        [ "$install_options" -eq 0 ] && [ "$purge_options" -eq 0 ] && \
+        [ "$install_options" -eq 0 ] && [ "$password_options" -eq 0 ] && [ "$purge_options" -eq 0 ] && \
             [ "$service_options" -eq 0 ] && [ "$service_mode_set" -eq 0 ] || {
             die "--version does not accept additional options"
         }

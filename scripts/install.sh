@@ -18,7 +18,7 @@ Usage: install.sh [OPTIONS]
 Install or upgrade SSH Exam Gate from a verified GitHub release.
 
 Options:
-  --version VERSION             Release tag such as v0.4.6 (default: latest)
+  --version VERSION             Release tag such as v0.4.7 (default: latest)
   --service-mode MODE           auto, systemd, or none (default: auto)
   --admin-bind ADDRESS          Fresh-install loopback bind (default: 127.0.0.1:8787)
   --admin-password-file FILE    Read a fresh-install admin password from FILE
@@ -80,7 +80,7 @@ esac
     die "--admin-bind port must be between 1 and 65535"
 }
 
-for command in curl sha256sum tar install useradd usermod groupadd getent runuser visudo sudo python3; do
+for command in curl sha256sum tar install useradd usermod groupadd getent runuser visudo sudo python3 stat; do
     command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
 done
 
@@ -232,8 +232,17 @@ install -m 0440 -o root -g root "$package_dir/deploy/sudoers.snippet" \
 
 read_admin_password() {
     if [ -n "$password_file" ]; then
-        [ -f "$password_file" ] && [ ! -L "$password_file" ] || {
-            die "admin password file must be a regular non-symlink file"
+        [ -f "$password_file" ] && [ ! -L "$password_file" ] && [ -r "$password_file" ] || {
+            die "admin password file must be a readable regular non-symlink file"
+        }
+        password_mode=$(stat -c '%a' "$password_file")
+        case "$password_mode" in
+            [0-7][0-7][0-7]) ;;
+            *) die "admin password file permissions could not be checked" ;;
+        esac
+        password_shared=${password_mode#?}
+        [ "$password_shared" = 00 ] || {
+            die "admin password file must not be accessible by group or other users"
         }
         admin_password=$(cat -- "$password_file")
         return

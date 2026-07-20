@@ -73,8 +73,7 @@ authorized-keys 规则；任何异常都默认拒绝。
 并在 systemd 宿主机启动回环 Web 管理服务。
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
-  sudo sh -s -- --install
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | sudo sh -s -- --install
 ```
 
 脚本通过 `/dev/tty` 两次读取新管理员密码，密码不会进入 Shell 历史或命令行参数。
@@ -84,16 +83,14 @@ curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-ex
 需要固定版本时：
 
 ```sh
-VERSION=v0.4.6
-curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | \
-  sudo sh -s -- --install --release "$VERSION"
+VERSION=v0.4.7
+curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | sudo sh -s -- --install --release "$VERSION"
 ```
 
 Docker 或其他非 systemd 环境由容器进程管理器负责运行管理端：
 
 ```sh
-curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | \
-  sudo sh -s -- --install --service-mode none
+curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-exam | sudo sh -s -- --install --service-mode none
 sudo ssh-exam --serve
 ```
 
@@ -109,8 +106,8 @@ sudo ssh-exam --serve
 管理端拒绝非回环监听地址。通过 SSH 隧道访问：
 
 ```sh
-ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
-  recovery-admin@bastion.example.org
+sudo ssh-exam --start
+ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 recovery-admin@bastion.example.org
 ```
 
 打开 `http://127.0.0.1:8787/`，然后：
@@ -127,20 +124,21 @@ ssh -p <SSH_PORT> -L 8787:127.0.0.1:8787 \
 ### 修改管理员密码
 
 ```sh
-read -rsp 'New admin password: ' ADMIN_PASSWORD
-printf '\n'
-printf '%s' "$ADMIN_PASSWORD" | sudo /usr/local/sbin/ssh-exam-admin \
-  set-admin-password --config /etc/ssh-exam/config.json
-unset ADMIN_PASSWORD
-sudo chown ssh-exam-admin:root /etc/ssh-exam/admin-auth.json
-sudo chmod 0600 /etc/ssh-exam/admin-auth.json
-sudo systemctl restart ssh-exam-admin.service
+sudo ssh-exam --set-admin-password
+sudo ssh-exam --restart
 ```
 
-### 统一生命周期命令
+第一条命令通过 `/dev/tty` 两次读取密码，原子替换认证文件并保留原有 UID/GID；密码不会
+出现在 Shell 历史或进程参数中。无人值守轮换可传入
+`--admin-password-file /root/admin-password`，完成后立即删除该文件。由外部进程管理器运行的
+容器需要重启对应容器或进程，而不是再启动一个管理端实例。
+
+### 统一管理命令
 
 ```sh
 sudo ssh-exam --upgrade
+sudo ssh-exam --migrate
+sudo ssh-exam --set-admin-password
 sudo ssh-exam --start
 sudo ssh-exam --status
 sudo ssh-exam --restart
@@ -149,8 +147,9 @@ sudo ssh-exam --serve    # 供容器进程管理器使用的前台模式
 ssh-exam --version
 ```
 
-只有自定义非 systemd 部署才需要传入 `--config`、`--admin-binary`、
-`--runtime-dir`、`--log-file` 和 `--run-as`。每次调用只能指定一个主操作。
+`--install` 已负责首次初始化。只有自定义部署才需要传入 `--config`、`--admin-binary` 或
+`--run-as`；`--runtime-dir` 和 `--log-file` 仅用于非 systemd 生命周期操作。每次调用只能
+指定一个主操作。题库和测试的高级批量自动化仍由 `ssh-exam-admin` 子命令提供。
 
 ### 一键卸载或彻底清除
 
