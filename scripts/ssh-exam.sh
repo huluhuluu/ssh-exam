@@ -6,6 +6,7 @@ DEFAULT_CONFIG=/etc/ssh-exam/config.json
 DEFAULT_ADMIN_BINARY=/usr/local/sbin/ssh-exam-admin
 DEFAULT_RUNTIME_DIR=/run/ssh-exam
 UNINSTALL_BINARY=/usr/local/sbin/ssh-exam-uninstall
+ISOLATED_HELPER=/usr/local/libexec/ssh-exam-isolated
 
 usage() {
     cat <<'EOF'
@@ -23,10 +24,11 @@ Primary actions (choose exactly one):
   --restart, restart       Restart the admin service
   --status, status         Report whether the admin service is running
   --serve, serve           Run the admin service in the foreground
+  --isolated ACTION        Manage an isolated test sshd
   --version                Show the installed binary version
 
 Install/upgrade options:
-  --release VERSION             Release tag such as v0.4.7 (default: latest)
+  --release VERSION             Release tag such as v0.4.8 (default: latest)
   --service-mode MODE           auto, systemd, or none (default: auto)
   --admin-bind ADDRESS          Fresh-install loopback bind
   --admin-password-file FILE    Fresh-install or replacement password file
@@ -43,6 +45,8 @@ Non-systemd service options:
   --runtime-dir PATH            PID/log directory for non-systemd mode
   --log-file PATH               Non-systemd log path
 
+Run 'ssh-exam --isolated --help' for isolated test-sshd actions and options.
+
 The command never edits or reloads OpenSSH.
 EOF
 }
@@ -51,6 +55,31 @@ die() {
     echo "ssh-exam: $*" >&2
     exit 1
 }
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+
+run_isolated() {
+    if [ -n "$script_dir" ] && [ -f "$script_dir/isolated-sshd.sh" ] && \
+        [ ! -L "$script_dir/isolated-sshd.sh" ] && [ -x "$script_dir/isolated-sshd.sh" ]; then
+        isolated_helper=$script_dir/isolated-sshd.sh
+    elif [ -n "$script_dir" ] && [ -f "$script_dir/ssh-exam-isolated" ] && \
+        [ ! -L "$script_dir/ssh-exam-isolated" ] && [ -x "$script_dir/ssh-exam-isolated" ]; then
+        isolated_helper=$script_dir/ssh-exam-isolated
+    elif [ -f "$ISOLATED_HELPER" ] && [ ! -L "$ISOLATED_HELPER" ] && \
+        [ -x "$ISOLATED_HELPER" ]; then
+        isolated_helper=$ISOLATED_HELPER
+    else
+        die "isolated sshd helper is not installed"
+    fi
+    exec "$isolated_helper" "$@"
+}
+
+case "${1:-}" in
+    --isolated|isolated)
+        shift
+        run_isolated "$@"
+        ;;
+esac
 
 action=
 release=latest
@@ -119,8 +148,6 @@ case "$service_mode" in
     auto|systemd|none) ;;
     *) die "--service-mode must be auto, systemd, or none" ;;
 esac
-
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
 
 resolve_release() {
     case "$release" in

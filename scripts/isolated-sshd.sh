@@ -1,10 +1,12 @@
 #!/bin/sh
+# Internal helper for `ssh-exam --isolated`; kept separate so the dispatcher
+# stays small while `exec` avoids an extra resident wrapper process.
 set -eu
 
 usage() {
     cat <<'EOF'
 Usage:
-  isolated-sshd.sh ACTION --runtime-dir DIR --test-user USER \
+  ssh-exam --isolated ACTION --runtime-dir DIR --test-user USER \
     --app-config FILE --policy-binary FILE [options]
 
 Actions:
@@ -26,19 +28,19 @@ Options:
   --sshd FILE             Absolute sshd path (default: /usr/sbin/sshd).
 
 This script never reads or edits /etc/ssh/sshd_config and never reloads the
-system sshd. Cleanup command: isolated-sshd.sh cleanup --runtime-dir DIR
+system sshd. Cleanup command: ssh-exam --isolated cleanup --runtime-dir DIR
 EOF
 }
 
 die() {
-    echo "isolated-sshd: $*" >&2
+    echo "ssh-exam --isolated: $*" >&2
     exit 1
 }
 
-[ "$#" -ge 1 ] || {
-    usage >&2
-    exit 2
-}
+case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    '') usage >&2; exit 2 ;;
+esac
 
 action=$1
 shift
@@ -260,8 +262,8 @@ case "$action" in
         while [ "$count" -lt 30 ]; do
             if running_pid && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
                 echo "Started isolated sshd PID $pid on $listen_address:$port."
-                echo "Stop: $0 stop --runtime-dir $runtime_dir"
-                echo "Cleanup: $0 cleanup --runtime-dir $runtime_dir"
+                echo "Stop: ssh-exam --isolated stop --runtime-dir $runtime_dir"
+                echo "Cleanup: ssh-exam --isolated cleanup --runtime-dir $runtime_dir"
                 exit 0
             fi
             sleep 0.1

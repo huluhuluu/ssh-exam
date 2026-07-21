@@ -98,7 +98,7 @@ keys, attempts, and publication history.
 Pin an exact release when repeatability matters:
 
 ```sh
-VERSION=v0.4.7
+VERSION=v0.4.8
 curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | sudo sh -s -- --install --release "$VERSION"
 ```
 
@@ -166,6 +166,7 @@ sudo ssh-exam --status
 sudo ssh-exam --restart
 sudo ssh-exam --stop
 sudo ssh-exam --serve    # foreground mode for a container supervisor
+ssh-exam --isolated --help
 ssh-exam --version
 ```
 
@@ -194,8 +195,9 @@ identities, and project groups:
 sudo ssh-exam --purge --confirm-purge DELETE-SSH-EXAM
 ```
 
-Release archives contain three binaries, the unified command, compatibility installation scripts, generic
-configuration and quiz examples, deployment snippets, the license, and both
+Release archives contain three Rust binaries, the unified command, its internal
+isolated-sshd helper, compatibility installation scripts, generic configuration
+and quiz examples, deployment snippets, the license, and both
 READMEs. They never contain runtime databases, credentials, SSH keys, logs, or
 host-specific configuration.
 
@@ -261,12 +263,13 @@ ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
 
 ## Test Before Production
 
-Use the isolated runner before changing the system daemon. It creates a separate
+Use the unified command before changing the system daemon. It creates a separate
 `sshd` under a caller-owned runtime directory and requires an explicit unused
-port. It never edits or reloads the live SSH configuration.
+port. The command delegates with `exec`, so it adds no resident wrapper process,
+and it never edits or reloads the live SSH configuration.
 
 ```sh
-./scripts/isolated-sshd.sh dry-run \
+ssh-exam --isolated dry-run \
   --runtime-dir <RUNTIME_DIR> \
   --port <TEST_PORT> \
   --test-user <UNIX_USER> \
@@ -274,7 +277,7 @@ port. It never edits or reloads the live SSH configuration.
   --policy-binary /usr/local/libexec/ssh-exam-key-policy \
   --command-user ssh-exam-key
 
-sudo ./scripts/isolated-sshd.sh background \
+sudo ssh-exam --isolated background \
   --runtime-dir <RUNTIME_DIR> \
   --port <TEST_PORT> \
   --test-user <UNIX_USER> \
@@ -283,8 +286,8 @@ sudo ./scripts/isolated-sshd.sh background \
   --command-user ssh-exam-key
 
 ssh -p <TEST_PORT> -t <UNIX_USER>@127.0.0.1
-sudo ./scripts/isolated-sshd.sh stop --runtime-dir <RUNTIME_DIR>
-sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
+sudo ssh-exam --isolated stop --runtime-dir <RUNTIME_DIR>
+sudo ssh-exam --isolated cleanup --runtime-dir <RUNTIME_DIR>
 ```
 
 In Docker, a listener inside the container is not automatically reachable from

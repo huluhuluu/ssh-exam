@@ -10,6 +10,7 @@ ADMIN_BINARY=/usr/local/sbin/ssh-exam-admin
 UNINSTALL_BINARY=/usr/local/sbin/ssh-exam-uninstall
 COMMAND_BINARY=/usr/local/sbin/ssh-exam
 INSTALL_HELPER=/usr/local/libexec/ssh-exam-install
+ISOLATED_HELPER=/usr/local/libexec/ssh-exam-isolated
 
 usage() {
     cat <<'EOF'
@@ -18,7 +19,7 @@ Usage: install.sh [OPTIONS]
 Install or upgrade SSH Exam Gate from a verified GitHub release.
 
 Options:
-  --version VERSION             Release tag such as v0.4.7 (default: latest)
+  --version VERSION             Release tag such as v0.4.8 (default: latest)
   --service-mode MODE           auto, systemd, or none (default: auto)
   --admin-bind ADDRESS          Fresh-install loopback bind (default: 127.0.0.1:8787)
   --admin-password-file FILE    Read a fresh-install admin password from FILE
@@ -144,6 +145,9 @@ done
 [ -f "$package_dir/ssh-exam" ] && [ ! -L "$package_dir/ssh-exam" ] || {
     die "release archive is missing ssh-exam"
 }
+[ -f "$package_dir/ssh-exam-isolated" ] && [ ! -L "$package_dir/ssh-exam-isolated" ] || {
+    die "release archive is missing ssh-exam-isolated"
+}
 
 ensure_group() {
     getent group "$1" >/dev/null 2>&1 || groupadd --system "$1"
@@ -176,6 +180,7 @@ install -m 0755 -o root -g root "$package_dir/bin/ssh-exam-admin" "$ADMIN_BINARY
 install -m 0755 -o root -g root "$package_dir/uninstall.sh" "$UNINSTALL_BINARY"
 install -m 0755 -o root -g root "$package_dir/ssh-exam" "$COMMAND_BINARY"
 install -m 0755 -o root -g root "$package_dir/install.sh" "$INSTALL_HELPER"
+install -m 0755 -o root -g root "$package_dir/ssh-exam-isolated" "$ISOLATED_HELPER"
 
 install -m 0644 -o root -g root "$package_dir/deploy/sshd_config.snippet" \
     "$package_dir/deploy/sudoers.snippet" "$package_dir/deploy/ssh-exam-admin.service" \

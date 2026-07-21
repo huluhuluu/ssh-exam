@@ -66,6 +66,7 @@ fi
 
 rm -f -- /usr/local/libexec/ssh-exam-key-policy \
     /usr/local/libexec/ssh-exam-tui /usr/local/libexec/ssh-exam-install \
+    /usr/local/libexec/ssh-exam-isolated \
     /usr/local/sbin/ssh-exam-admin /usr/local/sbin/ssh-exam
 rm -rf -- "$DOC_DIR"
 

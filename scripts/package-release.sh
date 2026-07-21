@@ -79,8 +79,9 @@ cp -- "$project_dir/README.md" "$project_dir/README.zh-CN.md" \
 cp -- "$project_dir/scripts/install.sh" "$package_root/install.sh"
 cp -- "$project_dir/scripts/uninstall.sh" "$package_root/uninstall.sh"
 cp -- "$project_dir/scripts/ssh-exam.sh" "$package_root/ssh-exam"
+cp -- "$project_dir/scripts/isolated-sshd.sh" "$package_root/ssh-exam-isolated"
 chmod 0755 "$package_root/install.sh" "$package_root/uninstall.sh" \
-    "$package_root/ssh-exam"
+    "$package_root/ssh-exam" "$package_root/ssh-exam-isolated"
 
 archive=$output_dir/$package_name.tar.gz
 [ ! -e "$archive" ] && [ ! -e "$output_dir/SHA256SUMS" ] && \

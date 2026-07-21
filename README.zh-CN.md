@@ -83,7 +83,7 @@ curl -fsSL https://github.com/huluhuluu/ssh-exam/releases/latest/download/ssh-ex
 需要固定版本时：
 
 ```sh
-VERSION=v0.4.7
+VERSION=v0.4.8
 curl -fsSL "https://github.com/huluhuluu/ssh-exam/releases/download/${VERSION}/ssh-exam" | sudo sh -s -- --install --release "$VERSION"
 ```
 
@@ -144,6 +144,7 @@ sudo ssh-exam --status
 sudo ssh-exam --restart
 sudo ssh-exam --stop
 sudo ssh-exam --serve    # 供容器进程管理器使用的前台模式
+ssh-exam --isolated --help
 ssh-exam --version
 ```
 
@@ -168,8 +169,8 @@ sudo ssh-exam --uninstall
 sudo ssh-exam --purge --confirm-purge DELETE-SSH-EXAM
 ```
 
-发布压缩包只包含三个二进制、统一命令、兼容安装脚本、通用配置/题库示例、部署片段、许可证和
-中英文 README，不包含数据库、凭据、SSH 密钥、日志或机器专用配置。
+发布压缩包包含三个 Rust 二进制、统一命令、内部隔离 sshd helper、兼容安装脚本、通用配置/题库
+示例、部署片段、许可证和中英文 README，不包含数据库、凭据、SSH 密钥、日志或机器专用配置。
 
 ## 题库
 
@@ -224,11 +225,12 @@ ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
 
 ## 先隔离测试，再改生产
 
-隔离脚本会在调用者指定的运行目录下启动一个独立 `sshd`，并要求显式指定未占用
-端口。它不会编辑或重载系统 SSH 配置。
+统一命令会在调用者指定的运行目录下启动一个独立 `sshd`，并要求显式指定未占用
+端口。命令通过 `exec` 进入内部 helper，不会额外保留包装进程，也不会编辑或重载
+系统 SSH 配置。
 
 ```sh
-./scripts/isolated-sshd.sh dry-run \
+ssh-exam --isolated dry-run \
   --runtime-dir <RUNTIME_DIR> \
   --port <TEST_PORT> \
   --test-user <UNIX_USER> \
@@ -236,7 +238,7 @@ ssh-exam-admin show-published-test --config /etc/ssh-exam/config.json
   --policy-binary /usr/local/libexec/ssh-exam-key-policy \
   --command-user ssh-exam-key
 
-sudo ./scripts/isolated-sshd.sh background \
+sudo ssh-exam --isolated background \
   --runtime-dir <RUNTIME_DIR> \
   --port <TEST_PORT> \
   --test-user <UNIX_USER> \
@@ -245,8 +247,8 @@ sudo ./scripts/isolated-sshd.sh background \
   --command-user ssh-exam-key
 
 ssh -p <TEST_PORT> -t <UNIX_USER>@127.0.0.1
-sudo ./scripts/isolated-sshd.sh stop --runtime-dir <RUNTIME_DIR>
-sudo ./scripts/isolated-sshd.sh cleanup --runtime-dir <RUNTIME_DIR>
+sudo ssh-exam --isolated stop --runtime-dir <RUNTIME_DIR>
+sudo ssh-exam --isolated cleanup --runtime-dir <RUNTIME_DIR>
 ```
 
 在 Docker 中，容器内监听端口不会自动被其他机器访问。需要显式发布测试端口，

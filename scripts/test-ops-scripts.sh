@@ -5,10 +5,15 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 install_script=$project_dir/scripts/install.sh
 uninstall_script=$project_dir/scripts/uninstall.sh
 command_script=$project_dir/scripts/ssh-exam.sh
+isolated_script=$project_dir/scripts/isolated-sshd.sh
 
 for readme in "$project_dir/README.md" "$project_dir/README.zh-CN.md"; do
     if grep -Eq '^(curl -fsSL|ssh -p ).*\\$' "$readme"; then
         echo "simple README commands must not use hard line continuations: $readme" >&2
+        exit 1
+    fi
+    if grep -q './scripts/isolated-sshd.sh' "$readme"; then
+        echo "README must use the unified ssh-exam --isolated entry point: $readme" >&2
         exit 1
     fi
 done
@@ -16,9 +21,11 @@ done
 sh -n "$install_script"
 sh -n "$uninstall_script"
 sh -n "$command_script"
+sh -n "$isolated_script"
 "$install_script" --help >/dev/null
 "$uninstall_script" --help >/dev/null
 "$command_script" --help >/dev/null
+"$command_script" --isolated --help >/dev/null
 
 grep -q 'OpenSSH was not modified' "$install_script"
 grep -q 'AuthorizedKeysCommand.*ssh-exam-key-policy' "$uninstall_script"
@@ -30,6 +37,9 @@ fi
 grep -q 'sha256sum' "$install_script"
 grep -q 'password_shared.*00' "$install_script"
 grep -q 'Preserved:.*CONFIG_DIR.*STATE_DIR' "$uninstall_script"
+grep -q 'ssh-exam-isolated' "$project_dir/scripts/package-release.sh"
+grep -q 'ssh-exam-isolated' "$install_script"
+grep -q 'ssh-exam-isolated' "$uninstall_script"
 grep -q -- '--username \* --fingerprint SHA256\\:\* --language \*' "$project_dir/deploy/sudoers.snippet"
 if grep -q -- '--bank' "$project_dir/deploy/sudoers.snippet"; then
     echo "sudoers snippet contains removed --bank argument" >&2
@@ -38,6 +48,10 @@ fi
 
 if "$command_script" --start --stop >/dev/null 2>&1; then
     echo "unified command accepted multiple primary actions" >&2
+    exit 1
+fi
+if "$command_script" --start --isolated cleanup --runtime-dir /tmp/ssh-exam-test >/dev/null 2>&1; then
+    echo "unified command accepted isolated mode with another primary action" >&2
     exit 1
 fi
 
@@ -54,6 +68,16 @@ cleanup() {
     rm -rf -- "$work_dir"
 }
 trap cleanup EXIT HUP INT TERM
+
+"$command_script" --isolated cleanup --runtime-dir "$work_dir/isolated" >/dev/null
+[ ! -e "$work_dir/isolated" ]
+mkdir "$work_dir/archive"
+cp "$command_script" "$work_dir/archive/ssh-exam"
+cp "$isolated_script" "$work_dir/archive/ssh-exam-isolated"
+chmod 0755 "$work_dir/archive/ssh-exam" "$work_dir/archive/ssh-exam-isolated"
+"$work_dir/archive/ssh-exam" --isolated cleanup \
+    --runtime-dir "$work_dir/archive-isolated" >/dev/null
+[ ! -e "$work_dir/archive-isolated" ]
 
 printf '{}\n' >"$work_dir/config.json"
 cat >"$work_dir/fake-admin" <<'EOF'
